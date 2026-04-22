@@ -26,10 +26,12 @@ import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
 import com.blankj.utilcode.util.ToastUtils
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -279,18 +281,20 @@ class MaintenanceFragment : Fragment() {
         )
     }
 
-    private fun tryRecoverIdleMoveStatus(reason: String): Boolean {
+    private suspend fun tryRecoverIdleMoveStatus(reason: String): Boolean {
         val config = AppConfig.getAppConfig()
         if (config.moveStatus == 0) {
             return true
         }
-        if (!VMModbusHelper.connectStatus()) {
+        if (!isLowerBoardConnected()) {
             return false
         }
-        val status201 = VMModbusHelper.readHoldingRegisters(
-            KaoChangOperate.modbus_address,
-            KaoChangOperate.action_address_status
-        )
+        val status201 = withContext(Dispatchers.IO) {
+            VMModbusHelper.readHoldingRegisters(
+                KaoChangOperate.modbus_address,
+                KaoChangOperate.action_address_status
+            )
+        }
         if (status201 == 0) {
             val oldMoveStatus = config.moveStatus
             config.moveStatus = 0
@@ -302,6 +306,12 @@ class MaintenanceFragment : Fragment() {
             return true
         }
         return false
+    }
+
+    private suspend fun isLowerBoardConnected(): Boolean {
+        return withContext(Dispatchers.IO) {
+            VMModbusHelper.connectStatus()
+        }
     }
 
     private suspend fun waitUntilMachineIdleOrTimeout(
@@ -501,58 +511,86 @@ class MaintenanceFragment : Fragment() {
                     "onlineStatus（设备营业状态）=${onlineStatusText(currentConfig.onlineStatus)}，" +
                     "isEnable（烤肠算法开关）=${currentConfig.isEnable}"
             )
-            DataManagementAPI.refreshRemoteDeviceState(logPrefix = "维护页开启算法前同步") { result ->
-                activity?.runOnUiThread {
-                    if (!isAdded || _binding == null) {
-                        return@runOnUiThread
-                    }
-                    val latestConfig = AppConfig.getAppConfig()
-                    if (!result.success) {
-                        LogUtils.w(
-                            "【维护操作】手动开启烤肠算法前同步云端状态失败，拒绝本次开启：" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
-                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
-                        )
-                        syncAlgorithmSwitchFromRuntimeState("开启算法前同步失败后回滚UI", forceLog = true)
-                        ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
-                        restoreSwitchControls()
-                        return@runOnUiThread
-                    }
-
-                    if (latestConfig.onlineStatus in setOf(0, 2, 3) || latestConfig.inspectionMode == 1 || latestConfig.errorStatus != 0) {
-                        LogUtils.w(
-                            "【维护操作】手动开启烤肠算法前已同步到云端最新状态，本次拒绝开启：" +
-                                "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                                "inspectionMode（检修模式）=${inspectionModeText(latestConfig.inspectionMode)}，" +
-                                "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
-                                "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
-                                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
-                        )
-                        syncAlgorithmSwitchFromRuntimeState("开启算法前云端状态不允许后回滚UI", forceLog = true)
-                        val tip = when {
-                            latestConfig.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
-                            latestConfig.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
-                            latestConfig.onlineStatus == 0 -> "后台设备状态为未启用，请先启用后再开启算法"
-                            latestConfig.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
-                            latestConfig.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
-                            else -> "后台设备状态不允许开启算法"
+            fun syncRemoteStateBeforeEnable(attempt: Int) {
+                val logPrefix = if (attempt == 1) "维护页开启算法前同步" else "维护页开启算法前第${attempt}次同步"
+                DataManagementAPI.refreshRemoteDeviceState(logPrefix = logPrefix) { result ->
+                    activity?.runOnUiThread {
+                        if (!isAdded || _binding == null) {
+                            return@runOnUiThread
                         }
-                        ToastUtils.showShort(tip)
-                        restoreSwitchControls()
-                        return@runOnUiThread
-                    }
+                        val latestConfig = AppConfig.getAppConfig()
+                        when (ManualAlgorithmEnableSyncRetryPolicy.decide(attempt, result.success)) {
+                            ManualAlgorithmEnableSyncRetryPolicy.Decision.RETRY -> {
+                                LogUtils.w(
+                                    "【维护操作】手动开启烤肠算法前同步云端状态失败，准备第2次重试：" +
+                                        "attempt=$attempt，" +
+                                        "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                        "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                        "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                                )
+                                binding.tvCooldownHint.text = "同步失败，准备重试"
+                                lifecycleScope.launch {
+                                    delay(ManualAlgorithmEnableSyncRetryPolicy.RETRY_DELAY_MS)
+                                    if (!isAdded || _binding == null) {
+                                        return@launch
+                                    }
+                                    binding.tvCooldownHint.text = "正在同步云端状态（第2次）"
+                                    syncRemoteStateBeforeEnable(attempt + 1)
+                                }
+                            }
 
-                    LogUtils.i(
-                        "【维护操作】手动开启烤肠算法前已同步到云端最新状态，允许本次开启：" +
-                            "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
-                            "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
-                            "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
-                    )
-                    binding.tvCooldownHint.text = ""
-                    applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已先同步云端状态）")
+                            ManualAlgorithmEnableSyncRetryPolicy.Decision.REJECT -> {
+                                LogUtils.w(
+                                    "【维护操作】手动开启烤肠算法前第2次同步云端状态仍失败，拒绝本次开启：" +
+                                        "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                        "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                        "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                                )
+                                syncAlgorithmSwitchFromRuntimeState("开启算法前同步失败后回滚UI", forceLog = true)
+                                ToastUtils.showShort("同步云端设备状态失败，请稍后重试")
+                                restoreSwitchControls()
+                            }
+
+                            ManualAlgorithmEnableSyncRetryPolicy.Decision.PROCEED -> {
+                                if (latestConfig.onlineStatus in setOf(0, 2, 3) || latestConfig.inspectionMode == 1 || latestConfig.errorStatus != 0) {
+                                    LogUtils.w(
+                                        "【维护操作】手动开启烤肠算法前已同步到云端最新状态，本次拒绝开启：" +
+                                            "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                            "inspectionMode（检修模式）=${inspectionModeText(latestConfig.inspectionMode)}，" +
+                                            "errorStatus（设备故障状态）=${latestConfig.errorStatus}，" +
+                                            "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                            "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                                    )
+                                    syncAlgorithmSwitchFromRuntimeState("开启算法前云端状态不允许后回滚UI", forceLog = true)
+                                    val tip = when {
+                                        latestConfig.inspectionMode == 1 -> "设备当前处于检修模式，请先退出检修模式再开启算法"
+                                        latestConfig.errorStatus != 0 -> "设备当前存在故障，请先恢复设备状态再开启算法"
+                                        latestConfig.onlineStatus == 0 -> "后台设备状态为未启用，请先启用后再开启算法"
+                                        latestConfig.onlineStatus == 2 -> "后台设备状态为休息中，请先改为运营中后再开启算法"
+                                        latestConfig.onlineStatus == 3 -> "后台设备状态为维护中，请先改为运营中后再开启算法"
+                                        else -> "后台设备状态不允许开启算法"
+                                    }
+                                    ToastUtils.showShort(tip)
+                                    restoreSwitchControls()
+                                    return@runOnUiThread
+                                }
+
+                                LogUtils.i(
+                                    "【维护操作】手动开启烤肠算法前已同步到云端最新状态，允许本次开启：" +
+                                        "attempt=$attempt，" +
+                                        "onlineStatus（设备营业状态）=${onlineStatusText(latestConfig.onlineStatus)}，" +
+                                        "isEnable（烤肠算法开关）=${latestConfig.isEnable}，" +
+                                        "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(latestConfig.restStatusSource)}"
+                                )
+                                binding.tvCooldownHint.text = ""
+                                applyAlgorithmSwitch(enable = true, reason = "维护页手动开启算法（已先同步云端状态）")
+                            }
+                        }
+                    }
                 }
             }
+
+            syncRemoteStateBeforeEnable(attempt = 1)
         }
 
         binding.swInspectionMode.setOnCheckedChangeListener { _, isChecked ->
@@ -653,7 +691,7 @@ class MaintenanceFragment : Fragment() {
         binding.btnErroStatus.setOnClickListener {
             lifecycleScope.launch {
                 // 方案A：下位机仍未连接时拦截，防止出现"异常状态=正常"的假阳性
-                if (!VMModbusHelper.connectStatus()) {
+                if (!isLowerBoardConnected()) {
                     ToastUtils.showLong("下位机串口仍未连接，请确认通信恢复后再操作")
                     LogUtils.w("【维护操作】拒绝恢复正常状态：下位机串口仍未连接 | modbusAddress=${AppConfig.getAppConfig().modbusAddress}")
                     return@launch
@@ -668,6 +706,7 @@ class MaintenanceFragment : Fragment() {
                 config.errorStatus = 0
                 config.onlineStatus = targetOnlineStatus
                 AppConfig.saveAppConfig(config)
+                KaoChangAlgorithm.resetModbusRecoveryState("维护页点击恢复正常状态")
                 val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
                 if (!runtimePublishOk) {
                     LogUtils.w("【维护操作】恢复正常状态时 MQTT 主上报失败，回退 HTTP 补偿：" +
@@ -764,18 +803,18 @@ class MaintenanceFragment : Fragment() {
                     ToastUtils.showShort("请等待当前操作完成")
                     return@setPositiveButton
                 }
-                if (!VMModbusHelper.connectStatus()) {
-                    ToastUtils.showShort("下位机未连接，请先恢复通信")
-                    LogUtils.w("【维护操作】拒绝手动取肠：下位机当前未连接")
-                    return@setPositiveButton
-                }
-                status.set(false)
-                val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
-                    ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
-                    ?: "未知口味"
-                LogUtils.d("【维护操作】手动取肠确认：准备从烤盘${kaoPan.positionSn}取出烤肠($tasteLabel)")
-
                 lifecycleScope.launch {
+                    if (!isLowerBoardConnected()) {
+                        ToastUtils.showShort("下位机未连接，请先恢复通信")
+                        LogUtils.w("【维护操作】拒绝手动取肠：下位机当前未连接")
+                        dialog.dismiss()
+                        return@launch
+                    }
+                    status.set(false)
+                    val tasteLabel = kaoPan.taste.productName?.takeIf { it.isNotBlank() }
+                        ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
+                        ?: "未知口味"
+                    LogUtils.d("【维护操作】手动取肠确认：准备从烤盘${kaoPan.positionSn}取出烤肠($tasteLabel)")
                     val idleReady = waitUntilMachineIdleOrTimeout(
                         reason = "维护页手动取肠等待空闲",
                         waitingText = "请等待上位机空闲"

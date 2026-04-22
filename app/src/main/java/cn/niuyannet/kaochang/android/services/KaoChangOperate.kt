@@ -50,6 +50,7 @@ object KaoChangOperate {
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
     private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
+    private const val LEGACY_LIFT_PLATFORM_DEFAULT_WORLD_Y = 80
     private val SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS = listOf(300L, 500L, 700L)
     private const val SELL_PLATFORM_MONITOR_INTERVAL_MS = 1000L
     private const val SELL_PLATFORM_WAIT_TIMEOUT_MS = 15_000L
@@ -123,7 +124,7 @@ object KaoChangOperate {
             return false
         }
         return when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-            ActionStatus201.IDLE -> {
+            ActionExecution201State.IDLE -> {
                 val oldMoveStatus = config.moveStatus
                 config.moveStatus = 0
                 AppConfig.saveAppConfig(config)
@@ -161,13 +162,6 @@ object KaoChangOperate {
             logD(LOG_ACTION, "$actionName 等待机械动作收尾：moveStatus=${moveStatusDesc(appState)}")
         }
         return true
-    }
-
-    private enum class ActionStatus201 {
-        IDLE,
-        RUNNING,
-        BUSY,
-        DISCONNECTED
     }
 
     private enum class ActionExecutionResult {
@@ -231,7 +225,7 @@ object KaoChangOperate {
         val checkDeadline = System.currentTimeMillis() + getPostSellIdleMaxWaitMs()
         while (System.currentTimeMillis() < checkDeadline) {
             when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-                ActionStatus201.IDLE -> {
+                ActionExecution201State.IDLE -> {
                     val now = System.currentTimeMillis()
                     if (idleSince < 0L) {
                         idleSince = now
@@ -241,10 +235,10 @@ object KaoChangOperate {
                         return
                     }
                 }
-                ActionStatus201.RUNNING, ActionStatus201.BUSY -> {
+                ActionExecution201State.RUNNING, ActionExecution201State.BUSY -> {
                     idleSince = -1L
                 }
-                ActionStatus201.DISCONNECTED -> {
+                ActionExecution201State.DISCONNECTED -> {
                     logW(LOG_SUPPLEMENT, "售卖收尾后读取 201 失败，跳过空闲稳定检查")
                     return
                 }
@@ -277,6 +271,43 @@ object KaoChangOperate {
             }
         }
         return results
+    }
+
+    private suspend fun resolveSellPlatformOutcomeAfterMechanicalDeliveryLegacy(): TakeSausageResult {
+        val presenceResults = captureSellPlatformPresenceSequence()
+        val detectDeadlineMs = System.currentTimeMillis() + SELL_PLATFORM_WAIT_TIMEOUT_MS
+        return when (SellPlatformConfirmPolicy.evaluateInitialConfirmation(presenceResults)) {
+            SellPlatformConfirmPolicy.InitialConfirmationDecision.VISION_UNAVAILABLE_ASSUME_DELIVERED -> {
+                waitForUserTakeWhenVisionUnavailable(detectDeadlineMs)
+            }
+
+            SellPlatformConfirmPolicy.InitialConfirmationDecision.WAIT_FOR_DELIVERY_OR_FAST_TAKE -> {
+                logW(LOG_SELL_MONITOR, "售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
+                monitorSellPlatformUntilTakenOrDiscarded(
+                    detectDeadlineMs = detectDeadlineMs,
+                    detectedSausageBeforeMonitor = false
+                )
+            }
+
+            SellPlatformConfirmPolicy.InitialConfirmationDecision.WAIT_FOR_USER_TAKE -> {
+                logD(LOG_SELL_MONITOR, "售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
+                monitorSellPlatformUntilTakenOrDiscarded(
+                    detectDeadlineMs = detectDeadlineMs,
+                    detectedSausageBeforeMonitor = true
+                )
+            }
+        }
+    }
+
+    private fun finalizePanAfterMechanicalSell(kaoPan: KaoPan) {
+        kaoPan.cmdStatusTake = 0
+        kaoPan.isHasSausage = false
+        kaoPan.holdingTime = 0L
+        kaoPan.startTime = 0
+        kaoPan.status = 0
+        operateScope.launch {
+            KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+        }
     }
 
     private suspend fun closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty: Boolean): TakeSausageResult {
@@ -348,6 +379,47 @@ object KaoChangOperate {
         }
 
         return discardSellPlatformAfterTimeout()
+    }
+
+    private suspend fun waitForUserTakeWhenVisionUnavailable(
+        detectDeadlineMs: Long
+    ): TakeSausageResult {
+        logW(
+            LOG_SELL_MONITOR,
+            "售卖台首次确认阶段连续拍照失败，进入兼容等待窗口；若视觉恢复则回到正常确认流程，若在等待时间内仍未恢复，则按已送达处理，不进入维护"
+        )
+        var loggedWaitingWithoutVision = false
+        while (System.currentTimeMillis() < detectDeadlineMs) {
+            delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
+            val detectResult = captureSellPlatform()
+            when {
+                detectResult == null -> {
+                    if (!loggedWaitingWithoutVision) {
+                        loggedWaitingWithoutVision = true
+                        logW(LOG_SELL_MONITOR, "售卖台兼容等待窗口内视觉仍不可用，继续等待顾客取走并尝试恢复识别")
+                    }
+                }
+
+                detectResult.code == 2 -> {
+                    logW(LOG_SELL_MONITOR, "售卖台视觉已恢复，重新检测到烤肠，切回正常轮询等待顾客取走")
+                    return monitorSellPlatformUntilTakenOrDiscarded(
+                        detectDeadlineMs = detectDeadlineMs,
+                        detectedSausageBeforeMonitor = true
+                    )
+                }
+
+                else -> {
+                    logW(LOG_SELL_MONITOR, "售卖台视觉已恢复，检测到窗口为空，按顾客已取走处理")
+                    return closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty = false)
+                }
+            }
+        }
+
+        logW(
+            LOG_SELL_MONITOR,
+            "售卖台首次确认阶段连续拍照失败，在兼容等待窗口内视觉仍未恢复；按机械已送达处理并执行关门，不进入维护"
+        )
+        return closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty = false)
     }
 
     private suspend fun tryCloseSellPlatformOnError(reason: String) {
@@ -442,13 +514,21 @@ object KaoChangOperate {
      * 仅按当前和嵌入式确认的 201 协议语义解析动作状态。
      * 这里把读寄存器失败映射成 DISCONNECTED，避免和 201=2 的“设备忙”混淆。
      */
-    private fun parseActionStatus201(value: Int): ActionStatus201 {
+    private fun parseActionStatus201(value: Int): ActionExecution201State {
         return when (value) {
-            0 -> ActionStatus201.IDLE
-            1 -> ActionStatus201.RUNNING
-            2 -> ActionStatus201.BUSY
-            else -> ActionStatus201.DISCONNECTED
+            0 -> ActionExecution201State.IDLE
+            1 -> ActionExecution201State.RUNNING
+            2 -> ActionExecution201State.BUSY
+            else -> ActionExecution201State.DISCONNECTED
         }
+    }
+
+    private fun actionStatus201Desc(status: ActionExecution201State?): String = when (status) {
+        null -> "INIT(未开始轮询)"
+        ActionExecution201State.IDLE -> "0(IDLE/空闲)"
+        ActionExecution201State.RUNNING -> "1(RUNNING/执行中)"
+        ActionExecution201State.BUSY -> "2(BUSY/设备忙)"
+        ActionExecution201State.DISCONNECTED -> "READ_FAIL(读取失败/通信断开)"
     }
 
     /**
@@ -490,6 +570,8 @@ object KaoChangOperate {
         busyRetryDelayMs: Long = 1000L,
         runningPollDelayMs: Long = 1000L,
         runningTimeoutMs: Long = 60_000L,
+        requireObservedRunningBeforeSuccess: Boolean = false,
+        requireRunningObservedTimeoutMs: Long = 3_000L,
         issueAction: suspend () -> VMModbusHelper.ModbusOperationResult
     ): ActionExecutionResult {
         var busyRetryCount = 0
@@ -500,8 +582,8 @@ object KaoChangOperate {
             }
 
             when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-                ActionStatus201.IDLE -> Unit
-                ActionStatus201.RUNNING, ActionStatus201.BUSY -> {
+                ActionExecution201State.IDLE -> Unit
+                ActionExecution201State.RUNNING, ActionExecution201State.BUSY -> {
                     busyRetryCount++
                     if (busyRetryCount > maxBusyRetry) {
                         logE(LOG_ACTION, "$actionName 前连续检测到设备忙，超过重试阈值：retry=$busyRetryCount")
@@ -511,7 +593,7 @@ object KaoChangOperate {
                     delay(busyRetryDelayMs)
                     continue@retryLoop
                 }
-                ActionStatus201.DISCONNECTED -> {
+                ActionExecution201State.DISCONNECTED -> {
                     logE(LOG_ACTION, "$actionName 前读取动作状态失败")
                     return ActionExecutionResult.DISCONNECTED
                 }
@@ -543,21 +625,43 @@ object KaoChangOperate {
                 }
             }
             val start = System.currentTimeMillis()
+            val progressTracker = ActionExecutionProgressTracker(requireObservedRunningBeforeSuccess)
+            var lastPolledStatus: ActionExecution201State? = null
 
             while (true) {
                 delay(runningPollDelayMs)
                 if (!ensureModbusReady(actionName)) {
                     return ActionExecutionResult.DISCONNECTED
                 }
-                when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
-                    ActionStatus201.RUNNING -> {
+                val currentStatus = parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))
+                if (currentStatus != lastPolledStatus) {
+                    logD(
+                        LOG_ACTION,
+                        "$actionName 轮询201状态变化：${actionStatus201Desc(lastPolledStatus)} -> ${actionStatus201Desc(currentStatus)}，requireObservedRunningBeforeSuccess=$requireObservedRunningBeforeSuccess"
+                    )
+                    lastPolledStatus = currentStatus
+                }
+                when (currentStatus) {
+                    ActionExecution201State.RUNNING -> {
+                        progressTracker.onStatus(currentStatus)
                         if (System.currentTimeMillis() - start > runningTimeoutMs) {
                             logE(LOG_ACTION, "$actionName 长时间处于执行中(201=1)，已超时")
                             return ActionExecutionResult.RUNNING_TIMEOUT
                         }
                     }
-                    ActionStatus201.IDLE -> return ActionExecutionResult.SUCCESS
-                    ActionStatus201.BUSY -> {
+                    ActionExecution201State.IDLE -> {
+                        when (progressTracker.onStatus(currentStatus)) {
+                            ActionExecutionProgressTracker.ProgressDecision.SUCCESS -> return ActionExecutionResult.SUCCESS
+                            ActionExecutionProgressTracker.ProgressDecision.WAIT -> Unit
+                            ActionExecutionProgressTracker.ProgressDecision.WAIT_FOR_START -> {
+                                if (System.currentTimeMillis() - start > requireRunningObservedTimeoutMs) {
+                                    logE(LOG_ACTION, "$actionName 下发后未观察到201=1(执行中)，却持续回到201=0(空闲)，判定动作为未真正启动")
+                                    return ActionExecutionResult.COMMAND_REJECTED
+                                }
+                            }
+                        }
+                    }
+                    ActionExecution201State.BUSY -> {
                         busyRetryCount++
                         if (busyRetryCount > maxBusyRetry) {
                             logE(LOG_ACTION, "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
@@ -567,7 +671,7 @@ object KaoChangOperate {
                         delay(busyRetryDelayMs)
                         continue@retryLoop
                     }
-                    ActionStatus201.DISCONNECTED -> {
+                    ActionExecution201State.DISCONNECTED -> {
                         logE(LOG_ACTION, "$actionName 执行过程中读取动作状态失败")
                         return ActionExecutionResult.DISCONNECTED
                     }
@@ -587,6 +691,11 @@ object KaoChangOperate {
             ActionExecutionResult.RUNNING_TIMEOUT -> "$actionName 长时间处于执行中(201=1)，设备进入维护中"
         }
         markDeviceErrorAndUpload(logMessage)
+    }
+
+    private fun buildLegacyLiftPlatformRegisterValue(): Int {
+        val worldY = LEGACY_LIFT_PLATFORM_DEFAULT_WORLD_Y.coerceAtLeast(60)
+        return (1 shl 8) or worldY
     }
 
     private fun buildSelfCleanCommand(positionSn: Int): Int {
@@ -842,10 +951,10 @@ object KaoChangOperate {
                 "箱库存=$boxStockBefore，targetPanHasSausage=${kaoPan.isHasSausage}"
         )
         logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
-        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
         val result = executeActionWithRetry(
             actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
-            runningTimeoutMs = getBoxToPlatformTimeoutMs()
+            runningTimeoutMs = getBoxToPlatformTimeoutMs(),
+            requireObservedRunningBeforeSuccess = true
         ) {
             writeSingleRegister2(action_address, kaoPanBox.cmdValueTake)
         }
@@ -858,37 +967,18 @@ object KaoChangOperate {
         logD(LOG_SUPPLEMENT, "补肠中间态：烤肠($sausageName)已从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
         kaoPanBox.cmdStatusTake = 0
 
-        val sausageInfo=SauceDetectionUitls.captureAndDetect(0)
-        if (sausageInfo==null){
-            writeSingleRegister2(action_address_shenjiatai,0)
-            //未检测到烤肠，报错
-            logE(LOG_SUPPLEMENT, "补肠失败：机械臂已将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台，但视觉未识别到烤肠，已置 errorStatus=1")
-            AppConfig.getAppConfig().errorStatus=1//未识别到烤肠报错
-            AppConfig.getAppConfig().moveStatus = 0
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            operateScope.launch {
-                publishRuntimeStateWithHttpFallback("补肠失败后设备状态上报")
-            }
-            //未检测到烤肠直接就结束了
-            return false
-        }else{
-            var value_y=sausageInfo.worldY.toInt()
-            logD(LOG_SUPPLEMENT, "升降台识别原始坐标：worldY=$value_y")
-            if(value_y < 60){
-                value_y=60
-            }
-            logD(LOG_SUPPLEMENT, "升降台识别坐标修正后：worldY=$value_y")
-            var value = (1 shl 8) or value_y
-            logD(LOG_SUPPLEMENT, "升降台识别寄存器写入值：206=$value")
-
-            writeSingleRegister2(action_address_shenjiatai,value)
-            logD(LOG_SUPPLEMENT, "补肠识别成功：升降台检测到烤肠($sausageName)，世界坐标Y=${sausageInfo.worldY}，寄存器206写入=$value")
-        }
+        val liftPlatformRegisterValue = buildLegacyLiftPlatformRegisterValue()
+        logD(
+            LOG_SUPPLEMENT,
+            "老版本已跳过升降台视觉识别：烤肠($sausageName)按固定安全坐标继续下发，寄存器206=$liftPlatformRegisterValue"
+        )
+        writeSingleRegister2(action_address_shenjiatai, liftPlatformRegisterValue)
 
         delay(200)
         logD(LOG_ACTION, "机械臂将烤肠($sausageName)从升降台搬运到烤盘${kaoPan.positionSn}")
         val result2 = executeActionWithRetry(
-            actionName = "平台到烤盘${kaoPan.positionSn}"
+            actionName = "平台到烤盘${kaoPan.positionSn}",
+            requireObservedRunningBeforeSuccess = true
         ) {
             writeSingleRegister2(action_address, kaoPan.cmdValueMove)
         }
@@ -1103,11 +1193,13 @@ object KaoChangOperate {
                 delay(3000)
                 val sausageInfo = captureSellPlatform()
                 if (sausageInfo==null){ // 拍照失败
+                    tryCloseSellPlatformOnError("旧手动取肠首次拍照失败")
                     markDeviceErrorAndUpload("售卖台第一次拍照失败，旧手动取肠流程进入维护中")
                 }else if (sausageInfo.code == 2){ // 识别到烤肠，再确认一次客户是否没取走
                     delay(3000)
                     val sausageInfo_2 = captureSellPlatform()
                     if (sausageInfo_2 == null) {
+                        tryCloseSellPlatformOnError("旧手动取肠第二次拍照失败")
                         markDeviceErrorAndUpload("售卖台第二次拍照失败，旧手动取肠流程进入维护中")
                     }else if (sausageInfo_2.code == 2){
                         val closeResult = executeActionWithRetry(
@@ -1193,10 +1285,10 @@ object KaoChangOperate {
             acquiredByThisCall = true
         }
 
-        val sausageName = getPanTasteLabel(kaoPan)
-        CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
         try {
+            CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
+            val sausageName = getPanTasteLabel(kaoPan)
+            logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
             val result = executeActionWithRetry(
                 actionName = "烤盘${kaoPan.positionSn}到售卖口",
                 runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
@@ -1208,47 +1300,8 @@ object KaoChangOperate {
                 return TakeSausageResult.ERROR
             }
             SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
-
-            val presenceResults = captureSellPlatformPresenceSequence()
-            val detectedSausageInQuickRetries = presenceResults.any { it?.code == 2 }
-            val allPresenceCapturesFailed = presenceResults.all { it == null }
-            val detectDeadlineMs = System.currentTimeMillis() + SELL_PLATFORM_WAIT_TIMEOUT_MS
-            val takeResult = when {
-                allPresenceCapturesFailed -> {
-                    tryCloseSellPlatformOnError("售卖台首次确认阶段连续拍照失败")
-                    markDeviceErrorAndUpload("售卖台首次确认阶段连续拍照失败，无法确认烤肠是否已送达售卖口，设备进入维护中")
-                    TakeSausageResult.ERROR
-                }
-
-                !detectedSausageInQuickRetries -> {
-                    logW(LOG_SELL_MONITOR, "售卖台首次确认阶段未检测到烤肠，已完成 1.5 秒短频补拍，继续每秒轮询确认是否到货或已被顾客快速取走")
-                    monitorSellPlatformUntilTakenOrDiscarded(
-                        detectDeadlineMs = detectDeadlineMs,
-                        detectedSausageBeforeMonitor = false
-                    )
-                }
-
-                else -> {
-                    logD(LOG_SELL_MONITOR, "售卖台首次确认阶段已检测到烤肠，开始每秒轮询顾客是否已取走")
-                    monitorSellPlatformUntilTakenOrDiscarded(
-                        detectDeadlineMs = detectDeadlineMs,
-                        detectedSausageBeforeMonitor = true
-                    )
-                }
-            }
-
-            kaoPan.cmdStatusTake = 0
-            if (result == ActionExecutionResult.SUCCESS) {
-                kaoPan.isHasSausage = false
-                kaoPan.holdingTime = 0L
-                kaoPan.startTime = 0
-                kaoPan.status = 0
-            }
-
-            operateScope.launch {
-                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-            }
-
+            val takeResult = resolveSellPlatformOutcomeAfterMechanicalDeliveryLegacy()
+            finalizePanAfterMechanicalSell(kaoPan)
             return takeResult
         } finally {
             if (acquiredByThisCall) {
@@ -1618,7 +1671,14 @@ object KaoChangOperate {
      */
     fun writeSingleRegister(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         logD(LOG_DEVICE, "写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
-        return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+        return VMModbusHelper.writeSingleRegister(
+            modbus_address,
+            address,
+            value,
+            traceContext = VMModbusHelper.ModbusWriteTraceContext(
+                source = "KaoChangOperate.writeSingleRegister（立即写寄存器入口）"
+            )
+        )
 
     }
 
@@ -1628,7 +1688,14 @@ object KaoChangOperate {
     suspend fun writeSingleRegister2(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         delay(150)
         logD(LOG_DEVICE, "延迟写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
-        return VMModbusHelper.writeSingleRegister(modbus_address,address,value)
+        return VMModbusHelper.writeSingleRegister(
+            modbus_address,
+            address,
+            value,
+            traceContext = VMModbusHelper.ModbusWriteTraceContext(
+                source = "KaoChangOperate.writeSingleRegister2（延迟写寄存器入口）"
+            )
+        )
 
     }
 

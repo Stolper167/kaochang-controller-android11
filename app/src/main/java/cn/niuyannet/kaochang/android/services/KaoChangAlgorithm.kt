@@ -3,6 +3,9 @@
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.init.BusinessTime
+import cn.niuyannet.kaochang.android.modbus.ModbusCommunicationState
+import cn.niuyannet.kaochang.android.modbus.ModbusConnectStrategy
+import cn.niuyannet.kaochang.android.modbus.ModbusRecoveryPolicy
 import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
@@ -44,9 +47,10 @@ object KaoChangAlgorithm {
     private const val SUPPLY_RECOVER_SOURCE = "runtime_state:supply_status_recovered"
     private const val SUPPLY_SOLD_OUT_SOURCE = "runtime_state:supply_status_sold_out"
     private const val MODBUS_MONITOR_INTERVAL_MS = 1_000L
-    private const val MODBUS_DISCONNECT_REPORT_DELAY_MS = 5_000L
+    private const val MODBUS_AUTO_RECOVERY_TIMEOUT_MS = 15_000L
     private const val MODBUS_RECONNECT_STABLE_DELAY_MS = 5_000L
-    private const val MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS = 5_000L
+    private const val MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS = 3_000L
+    private const val MODBUS_BACKGROUND_REDISCOVERY_INTERVAL_MS = 30_000L
     /**
      * 算法对象内部的后台作用域。
      *
@@ -54,20 +58,24 @@ object KaoChangAlgorithm {
      * 避免继续使用 GlobalScope 造成难以控制的悬挂协程。
      */
     private val algorithmScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val modbusRecoveryPolicy = ModbusRecoveryPolicy(
+        autoReconnectTimeoutMs = MODBUS_AUTO_RECOVERY_TIMEOUT_MS,
+        reconnectStableDelayMs = MODBUS_RECONNECT_STABLE_DELAY_MS,
+        reconnectAttemptIntervalMs = MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS,
+        backgroundRediscoveryIntervalMs = MODBUS_BACKGROUND_REDISCOVERY_INTERVAL_MS
+    )
     private var isRunning = false
     private var modbusMonitorStarted = false
     private var serviceStartTime: Long = 0
-    private var modbusDisconnectSinceMs: Long? = null
-    private var modbusReconnectSinceMs: Long? = null
-    private var lastReconnectAttemptMs: Long = 0L
-    private var modbusReportedUnavailable = false
     private var lastRecoverableOnlineStatus = 1
     private var lastAvailableDecisionLogKey = ""
     private var lastAvailableUpdateLogKey = ""
     private var lastBusinessStartRecoveryLogKey = ""
-    private var loggedManualRecoveryRequiredOnDisconnect = false
-    private var loggedManualRecoveryRequiredAfterReconnect = false
     private var inspectionDisconnectSuppressedLogged = false
+    private var algorithmModbusUnavailableLogged = false
+    private var lastReconnectAttemptStatus: Boolean? = null
+    private var connectedButWaitingManualRecoveryLogged = false
+    private var reconnectAttemptInFlightLogged = false
     private var lastPollStateSnapshot: String? = null
     var isEnabled = false
 
@@ -111,6 +119,18 @@ object KaoChangAlgorithm {
         else -> "$value(未知)"
     }
 
+    private fun modbusCommunicationStateText(value: ModbusCommunicationState): String = when (value) {
+        ModbusCommunicationState.NORMAL -> "通信正常"
+        ModbusCommunicationState.AUTO_RECONNECTING -> "通信异常-自动重连中"
+        ModbusCommunicationState.WAIT_MANUAL_RECOVERY -> "通信异常-待人工恢复"
+    }
+
+    private fun modbusConnectStrategyText(value: ModbusConnectStrategy?): String = when (value) {
+        ModbusConnectStrategy.FAST_RECOVERY -> "快速自恢复"
+        ModbusConnectStrategy.FULL_REDISCOVERY -> "低频全量重发现"
+        null -> "未发起探测"
+    }
+
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
 
     private fun supplyStatusText(value: Int): String = when (value) {
@@ -123,6 +143,16 @@ object KaoChangAlgorithm {
         0 -> "0（关闭）"
         1 -> "1（开启）"
         else -> "$value（未知）"
+    }
+
+    private fun availableLogText(available: Long): String {
+        return if (available <= 0L) {
+            "扫码下单 纯肉烤肠"
+        } else if (available >= 60_000L) {
+            "预计烤制 ${kotlin.math.ceil(available / 60000.0).toInt()} 分钟"
+        } else {
+            "预计烤制 ${kotlin.math.ceil(available / 1000.0).toInt()} 秒"
+        }
     }
 
     private fun logBusinessStartSkipOnce(source: String, reason: String, config: AppConfigBean) {
@@ -211,7 +241,7 @@ object KaoChangAlgorithm {
         val config = AppConfig.getAppConfig()
         rememberRecoverableOnlineStatus(config.onlineStatus)
         if (config.onlineStatus == 3 && config.errorStatus == 2 && !VMModbusHelper.connectStatus()) {
-            modbusReportedUnavailable = true
+            modbusRecoveryPolicy.markDisconnectedAtStartup()
         }
         logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
         config.moveStatus = 0
@@ -247,10 +277,7 @@ object KaoChangAlgorithm {
             lastAvailableUpdateLogKey = logKey
             logD(
                 LOG_ALGORITHM,
-                "更新二维码预计时间：reason=$reason，" +
-                    "available=${config.available}->$newAvailable，" +
-                    "availableCountdownLatched=${config.availableCountdownLatched}->$newLatched，" +
-                    "displayText=$oldDisplayText->$newDisplayText"
+                "更新二维码预计时间：$oldDisplayText -> $newDisplayText，原因=$reason"
             )
         }
         config.available = newAvailable
@@ -261,8 +288,7 @@ object KaoChangAlgorithm {
         if (!mqttOk) {
             logW(
                 LOG_ALGORITHM,
-                "二维码预计时间 MQTT 主上报失败，回退 HTTP 补偿：" +
-                    "reason=$reason，available=$newAvailable，availableCountdownLatched=$newLatched"
+                "二维码预计时间 MQTT 上报失败，改走 HTTP 补偿：文案=${availableLogText(newAvailable)}，原因=$reason"
             )
             NetApi.updateDeviceInfo()
         }
@@ -614,9 +640,13 @@ object KaoChangAlgorithm {
             return
         }
         if (!VMModbusHelper.connectStatus()) {
-            logD(LOG_COMM, "modbus 串口未连接，跳过算法调度")
+            if (!algorithmModbusUnavailableLogged) {
+                algorithmModbusUnavailableLogged = true
+                logD(LOG_COMM, "Modbus 未连接，暂停算法调度，等待后台重连")
+            }
             return
         }
+        algorithmModbusUnavailableLogged = false
 
         val supplyContext = refreshSupplyStatus(config, kaoPanList, kaoPanBoxList)
         val schedulingEnabled = isEnabled && config.isEnable == 1 && canEnableAlgorithm(config, onlineStatus)
@@ -730,7 +760,17 @@ object KaoChangAlgorithm {
     fun stopServer() {
         isRunning = false
         modbusMonitorStarted = false
+        modbusRecoveryPolicy.resetToNormal()
+        connectedButWaitingManualRecoveryLogged = false
         logD(LOG_ALGORITHM, "智能烤肠算法服务停止")
+    }
+
+    fun resetModbusRecoveryState(reason: String) {
+        modbusRecoveryPolicy.resetToNormal()
+        connectedButWaitingManualRecoveryLogged = false
+        lastReconnectAttemptStatus = null
+        algorithmModbusUnavailableLogged = false
+        logI(LOG_COMM, "Modbus 通信状态已人工重置为正常：reason=$reason")
     }
 
     private fun startModbusStateMonitor() {
@@ -745,11 +785,9 @@ object KaoChangAlgorithm {
                 val config = AppConfig.getAppConfig()
 
                 if (shouldFreezeByInspection(config)) {
-                    modbusDisconnectSinceMs = null
-                    modbusReconnectSinceMs = null
-                    lastReconnectAttemptMs = 0L
-                    loggedManualRecoveryRequiredOnDisconnect = false
-                    loggedManualRecoveryRequiredAfterReconnect = false
+                    modbusRecoveryPolicy.resetToNormal()
+                    connectedButWaitingManualRecoveryLogged = false
+                    lastReconnectAttemptStatus = null
                     if (!connected && !inspectionDisconnectSuppressedLogged) {
                         inspectionDisconnectSuppressedLogged = true
                         logD(LOG_COMM, "检修模式下检测到 Modbus 断连，已抑制自动切维护和刷屏错误日志")
@@ -763,72 +801,104 @@ object KaoChangAlgorithm {
                 inspectionDisconnectSuppressedLogged = false
 
                 if (connected) {
-                    modbusDisconnectSinceMs = null
-                    lastReconnectAttemptMs = 0L
-                    loggedManualRecoveryRequiredOnDisconnect = false
                     rememberRecoverableOnlineStatus(config.onlineStatus)
+                    val decision = modbusRecoveryPolicy.onConnected(now)
+                    when {
+                        decision.startedReconnectStableObservation -> {
+                            logI(
+                                LOG_COMM,
+                                "【Modbus】检测到下位机重新连接，开始稳定性观察：" +
+                                    "state=${modbusCommunicationStateText(decision.state)}，port=${AppConfig.getAppConfig().modbusAddress}"
+                            )
+                        }
 
-                    if (modbusReportedUnavailable) {
-                        if (modbusReconnectSinceMs == null) {
-                            modbusReconnectSinceMs = now
-                            logI(LOG_COMM, "【Modbus】检测到下位机重新连接，开始稳定性观察 | port=${AppConfig.getAppConfig().modbusAddress}")
-                        } else if (now - modbusReconnectSinceMs!! >= MODBUS_RECONNECT_STABLE_DELAY_MS) {
+                        decision.autoRecovered -> {
                             val restoredOnlineStatus = resolveRecoveredOnlineStatus(config)
                             config.errorStatus = 0
                             config.onlineStatus = restoredOnlineStatus
                             AppConfig.saveAppConfig(config)
                             KaoChangOperate.restoreHeatingStateFromCurrentPans("modbus恢复稳定")
                             rememberRecoverableOnlineStatus(restoredOnlineStatus)
-                            modbusReportedUnavailable = false
-                            modbusReconnectSinceMs = null
-                            loggedManualRecoveryRequiredAfterReconnect = false
-                            logI(LOG_COMM, "【Modbus】下位机稳定连接确认，自动恢复正常状态 | port=${AppConfig.getAppConfig().modbusAddress}, onlineStatus=$restoredOnlineStatus, errorStatus=0")
+                            connectedButWaitingManualRecoveryLogged = false
+                            lastReconnectAttemptStatus = null
+                            logI(
+                                LOG_COMM,
+                                "【Modbus】下位机稳定连接确认，自动恢复正常状态：" +
+                                    "state=${modbusCommunicationStateText(decision.state)}，" +
+                                    "onlineStatus=$restoredOnlineStatus，errorStatus=0"
+                            )
                             uploadDeviceStatus(
-                                "modbus串口恢复稳定，自动恢复原因=断连类错误，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
+                                "modbus串口恢复稳定，通信状态=${modbusCommunicationStateText(decision.state)}，已恢复设备可用状态：onlineStatus=$restoredOnlineStatus"
                             )
                         }
-                    } else {
-                        modbusReconnectSinceMs = null
-                        if (config.onlineStatus == 3 && config.errorStatus != 0 && !loggedManualRecoveryRequiredAfterReconnect) {
-                            loggedManualRecoveryRequiredAfterReconnect = true
-                            logW(
-                                LOG_COMM,
-                                "检测到modbus已恢复，但当前仍处于维护中(errorStatus=${config.errorStatus})；" +
-                                    "不可自动恢复原因=当前错误并非本次断连监控触发，需人工恢复"
-                            )
-                        } else if (!(config.onlineStatus == 3 && config.errorStatus != 0)) {
-                            loggedManualRecoveryRequiredAfterReconnect = false
+
+                        decision.connectedButWaitingManualRecovery -> {
+                            if (!connectedButWaitingManualRecoveryLogged) {
+                                connectedButWaitingManualRecoveryLogged = true
+                                logW(
+                                    LOG_COMM,
+                                    "检测到 Modbus 已恢复连接，但当前处于${modbusCommunicationStateText(decision.state)}；" +
+                                        "设备保持维护中，需人工点击“恢复正常状态”后再继续运行"
+                                )
+                            }
+                        }
+
+                        else -> {
+                            connectedButWaitingManualRecoveryLogged = false
                         }
                     }
                 } else {
-                    modbusReconnectSinceMs = null
-                    loggedManualRecoveryRequiredAfterReconnect = false
-                    if (modbusDisconnectSinceMs == null) {
-                        modbusDisconnectSinceMs = now
-                        logW(LOG_COMM, "检测到modbus串口断开，开始不可用状态观察")
-                    }
-                    if (lastReconnectAttemptMs == 0L || now - lastReconnectAttemptMs >= MODBUS_RECONNECT_ATTEMPT_INTERVAL_MS) {
-                        lastReconnectAttemptMs = now
-                        VMModbusHelper.connectModbus { status ->
-                            logD(LOG_COMM, "modbus后台重连尝试完成：status=$status")
+                    connectedButWaitingManualRecoveryLogged = false
+                    val previousState = modbusRecoveryPolicy.currentState()
+                    val decision = modbusRecoveryPolicy.onDisconnected(now)
+                    if (decision.stateChanged) {
+                        when (decision.state) {
+                            ModbusCommunicationState.AUTO_RECONNECTING -> {
+                                logW(
+                                    LOG_COMM,
+                                    "检测到 Modbus 断连，进入${modbusCommunicationStateText(decision.state)}：" +
+                                        "将在${MODBUS_AUTO_RECOVERY_TIMEOUT_MS / 1000L}s内持续尝试恢复"
+                                )
+                            }
+
+                            ModbusCommunicationState.WAIT_MANUAL_RECOVERY -> {
+                                if (config.onlineStatus in 0..2) {
+                                    rememberRecoverableOnlineStatus(config.onlineStatus)
+                                    config.errorStatus = 2
+                                    config.onlineStatus = 3
+                                    AppConfig.saveAppConfig(config)
+                                }
+                                lastReconnectAttemptStatus = null
+                                uploadDeviceStatus(
+                                    "modbus串口断开超过${MODBUS_AUTO_RECOVERY_TIMEOUT_MS / 1000L}s，" +
+                                        "通信状态=${modbusCommunicationStateText(decision.state)}，已进入维护中等待人工恢复"
+                                )
+                            }
+
+                            else -> Unit
                         }
                     }
 
-                    if (!modbusReportedUnavailable && now - modbusDisconnectSinceMs!! >= MODBUS_DISCONNECT_REPORT_DELAY_MS) {
-                        if (config.onlineStatus in 0..2) {
-                            rememberRecoverableOnlineStatus(config.onlineStatus)
-                            config.errorStatus = 2
-                            config.onlineStatus = 3
-                            AppConfig.saveAppConfig(config)
-                            modbusReportedUnavailable = true
-                            loggedManualRecoveryRequiredOnDisconnect = false
-                            uploadDeviceStatus("modbus串口断开超过${MODBUS_DISCONNECT_REPORT_DELAY_MS}ms，自动恢复原因=断连类错误，已上报维护中")
-                        } else if (!loggedManualRecoveryRequiredOnDisconnect) {
-                            loggedManualRecoveryRequiredOnDisconnect = true
-                            logW(
+                    if (decision.shouldAttemptReconnect && !VMModbusHelper.isConnectAttemptInFlight()) {
+                        reconnectAttemptInFlightLogged = false
+                        VMModbusHelper.connectModbus(decision.connectStrategy ?: ModbusConnectStrategy.FULL_REDISCOVERY) { status ->
+                            reconnectAttemptInFlightLogged = false
+                            if (lastReconnectAttemptStatus != status) {
+                                lastReconnectAttemptStatus = status
+                                logD(
+                                    LOG_COMM,
+                                    "Modbus 后台重连尝试完成：state=${modbusCommunicationStateText(previousState.takeIf { it != ModbusCommunicationState.NORMAL } ?: decision.state)}，" +
+                                        "strategy=${modbusConnectStrategyText(decision.connectStrategy)}，结果=${if (status) "成功" else "失败"}"
+                                )
+                            }
+                        }
+                    } else if (decision.shouldAttemptReconnect && VMModbusHelper.isConnectAttemptInFlight()) {
+                        if (!reconnectAttemptInFlightLogged) {
+                            reconnectAttemptInFlightLogged = true
+                            logD(
                                 LOG_COMM,
-                                "modbus串口断开，但设备当前已处于维护中(errorStatus=${config.errorStatus})；" +
-                                    "不可自动恢复原因=当前错误并非从运营/休息状态切入的断连故障，保留人工恢复"
+                                "Modbus 后台重连仍在进行中，本轮跳过重复发起：" +
+                                    "strategy=${modbusConnectStrategyText(decision.connectStrategy)}"
                             )
                         }
                     }

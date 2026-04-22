@@ -28,7 +28,8 @@ object LogUtils {
         "【补肠流程】",
         "【烤盘搬移】",
         "【设备状态】",
-        "【自清洁】"
+        "【自清洁】",
+        "【Modbus写指令】"
     )
     private val FILE_LOG_KEYWORDS_FOR_HOME_ESTIMATE_DEBUG = listOf(
         "【首页展示】",

@@ -32,6 +32,22 @@ object SendServerHelper {
     private var activeRuntimeStateSignature: String? = null
     @Volatile
     private var activeRuntimeStateSeq: Long = -1L
+    @Volatile
+    private var lastAvailablePublishLogKey: String? = null
+    @Volatile
+    private var lastAvailableAckTimeoutLogKey: String? = null
+
+    private fun availableDisplayText(available: Long): String {
+        return AvailableStateLogFormatter.displayText(available)
+    }
+
+    private fun availableSourceText(source: String): String {
+        return source.substringBefore(':').ifBlank { source }
+    }
+
+    internal fun buildAvailableStateLogKey(available: Long): String {
+        return AvailableStateLogFormatter.buildStateLogKey(available)
+    }
 
     data class RuntimeControlAckPayload(
         val controlSeq: Long,
@@ -232,16 +248,16 @@ object SendServerHelper {
             )
             pendingAvailableStateAcks[seq] = snapshot
             scheduleAvailableStateAckTimeout(snapshot)
-            LogUtils.d(
-                "【MQTT展示态】已上报首页展示态：" +
-                    "availableSeq=$seq，source=$source，available=${config.available}，" +
-                    "availableCountdownLatched=${config.availableCountdownLatched}，reportedAt=$now"
-            )
+            val logKey = buildAvailableStateLogKey(config.available)
+            if (lastAvailablePublishLogKey != logKey) {
+                lastAvailablePublishLogKey = logKey
+                LogUtils.d(
+                    "【MQTT展示态】已上报首页展示态：seq=$seq，文案=${availableDisplayText(config.available)}，来源=${availableSourceText(source)}"
+                )
+            }
         } else {
             LogUtils.w(
-                "【MQTT展示态】首页展示态上报失败：" +
-                    "source=$source，available=${config.available}，" +
-                    "availableCountdownLatched=${config.availableCountdownLatched}"
+                "【MQTT展示态】首页展示态上报失败：文案=${availableDisplayText(config.available)}，来源=${availableSourceText(source)}"
             )
         }
         return ok
@@ -323,11 +339,14 @@ object SendServerHelper {
                 return@postDelayed
             }
             val ageMs = System.currentTimeMillis() - pending.publishedAt
-            LogUtils.w(
-                "【MQTT展示态】首页展示态上报后仍未收到服务端确认：" +
-                    "availableSeq=${pending.availableSeq}，source=${pending.source}，" +
-                    "available=${pending.available}，availableCountdownLatched=${pending.availableCountdownLatched}，ageMs=$ageMs"
-            )
+            val logKey = buildAvailableStateLogKey(pending.available)
+            if (lastAvailableAckTimeoutLogKey != logKey) {
+                lastAvailableAckTimeoutLogKey = logKey
+                LogUtils.w(
+                    "【MQTT展示态】首页展示态上报后仍未收到服务端确认：" +
+                        "seq=${pending.availableSeq}，文案=${availableDisplayText(pending.available)}，等待=${ageMs / 1000L}s"
+                )
+            }
         }, AVAILABLE_STATE_ACK_TIMEOUT_MS)
     }
 
@@ -341,6 +360,11 @@ object SendServerHelper {
         }
         val snapshot = pendingAvailableStateAcks.remove(availableSeq)
         val ackLatencyMs = snapshot?.let { System.currentTimeMillis() - it.publishedAt }
+        snapshot?.let {
+            if (lastAvailableAckTimeoutLogKey == buildAvailableStateLogKey(it.available)) {
+                lastAvailableAckTimeoutLogKey = null
+            }
+        }
         val freshAck = if (availableSeq > lastAckedAvailableStateSeq) {
             lastAckedAvailableStateSeq = availableSeq
             true

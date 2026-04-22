@@ -24,6 +24,24 @@ object VMMqttHelper : VMMqtt() {
     private var reconnectAttempt = 0
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private var reconnectRunnable: Runnable? = null
+    @Volatile
+    private var lastAvailableAckLogKey: String? = null
+
+    private fun availableDisplayText(available: Long): String {
+        return AvailableStateLogFormatter.displayText(available)
+    }
+
+    internal fun buildAvailableAckLogKey(
+        available: Long,
+        applied: Boolean,
+        reason: String
+    ): String {
+        return AvailableStateLogFormatter.buildAckLogKey(
+            available = available,
+            applied = applied,
+            reason = reason
+        )
+    }
 
     private fun shouldLogDisconnect(causeText: String): Boolean {
         val now = System.currentTimeMillis()
@@ -98,29 +116,22 @@ object VMMqttHelper : VMMqtt() {
         val applied = content.getBooleanValue("applied")
         val reason = content.getString("reason").orEmpty()
         val available = content.getLongValue("available")
-        val availableCountdownLatched = content.getIntValue("availableCountdownLatched")
-        val ackTs = content.getLongValue("ackTs")
         val ackResult = SendServerHelper.markAvailableStateAcked(availableSeq)
-        val payloadLength = (topicMessage.content ?: "").length
-        LogUtils.d(
-            "【MQTT业务】收到首页展示态回执：" +
-                "action=2（设备状态同步），availableSeq=$availableSeq，payloadLength=$payloadLength"
-        )
         if (applied) {
-            LogUtils.d(
-                "【MQTT展示态】服务端已确认首页展示态：" +
-                    "availableSeq=$availableSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "available=$available，availableCountdownLatched=$availableCountdownLatched，" +
-                    "ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
-                    "source=${ackResult.snapshot?.source ?: "unknown"}"
-            )
+            val logKey = buildAvailableAckLogKey(available = available, applied = true, reason = reason)
+            if (lastAvailableAckLogKey != logKey) {
+                lastAvailableAckLogKey = logKey
+                LogUtils.d(
+                    "【MQTT展示态】服务端已确认首页展示态：" +
+                        "seq=$availableSeq，结果=已应用，文案=${availableDisplayText(available)}，" +
+                        "耗时=${ackResult.ackLatencyMs ?: -1L}ms"
+                )
+            }
         } else {
             LogUtils.w(
                 "【MQTT展示态】服务端未应用首页展示态：" +
-                    "availableSeq=$availableSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "available=$available，availableCountdownLatched=$availableCountdownLatched，" +
-                    "ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
-                    "source=${ackResult.snapshot?.source ?: "unknown"}"
+                    "seq=$availableSeq，原因=$reason，文案=${availableDisplayText(available)}，" +
+                    "耗时=${ackResult.ackLatencyMs ?: -1L}ms"
             )
         }
         return true
@@ -148,10 +159,10 @@ object VMMqttHelper : VMMqtt() {
             }
             MqttProtocol.TYPE_AVAILABLE_STATE_ACK -> {
                 val availableSeq = content.getLongValue("availableSeq")
-                "收到首页展示态回执：action=2（设备状态同步），availableSeq=$availableSeq, payloadLength=${payload.length}"
+                "收到首页展示态回执：seq=$availableSeq"
             }
             MqttProtocol.TYPE_AVAILABLE_STATE ->
-                "收到首页展示态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
+                "收到首页展示态消息：messageType=$messageType"
             MqttProtocol.TYPE_RUNTIME_STATE ->
                 "收到运行时状态消息：action=2（设备状态同步），messageType=$messageType, payloadLength=${payload.length}"
             else ->
@@ -336,4 +347,3 @@ object VMMqttHelper : VMMqtt() {
         }
     }
 }
-

@@ -72,6 +72,28 @@ object KaoChangOperate {
     private fun logE(category: String, message: String) = LogUtils.e("[$category] $message")
     private fun logE(category: String, message: String, tr: Throwable) = LogUtils.e("[$category] $message", tr)
 
+    private fun describeSellPlatformDetectResult(result: SauceDetectionProcessor.SausageInfo?): String {
+        return when {
+            result == null -> "拍照失败/视觉不可用"
+            result.code == 2 ->
+                "识别到有肠(code=2, pixel=(${result.pixelX}, ${result.pixelY}), world=(${result.worldX}, ${result.worldY}, ${result.worldZ}))"
+            result.code == 1 ->
+                "识别到无肠(code=1，窗口为空/未检测到烤肠)"
+            else ->
+                "识别返回未知状态(code=${result.code}, pixel=(${result.pixelX}, ${result.pixelY}), world=(${result.worldX}, ${result.worldY}, ${result.worldZ}))"
+        }
+    }
+
+    private fun logSellPlatformCaptureResult(stage: String, attempt: Int, result: SauceDetectionProcessor.SausageInfo?) {
+        val message = "$stage 第${attempt}次拍照结果：${describeSellPlatformDetectResult(result)}"
+        when {
+            result == null -> logW(LOG_SELL_MONITOR, message)
+            result.code == 2 -> logI(LOG_SELL_MONITOR, message)
+            result.code == 1 -> logW(LOG_SELL_MONITOR, message)
+            else -> logW(LOG_SELL_MONITOR, message)
+        }
+    }
+
     private fun onlineStatusDesc(status: Int): String = when (status) {
         0 -> "0(未启用)"
         1 -> "1(运营中)"
@@ -260,12 +282,14 @@ object KaoChangOperate {
     private suspend fun captureSellPlatformPresenceSequence(): List<SauceDetectionProcessor.SausageInfo?> {
         val results = mutableListOf<SauceDetectionProcessor.SausageInfo?>()
         results += captureSellPlatform()
+        logSellPlatformCaptureResult("售卖台首次确认阶段", results.size, results.last())
         if (results.last()?.code == 2) {
             return results
         }
         SELL_PLATFORM_PRESENCE_RETRY_DELAYS_MS.forEach { delayMs ->
             delay(delayMs)
             results += captureSellPlatform()
+            logSellPlatformCaptureResult("售卖台首次确认阶段", results.size, results.last())
             if (results.last()?.code == 2) {
                 return results
             }
@@ -310,7 +334,10 @@ object KaoChangOperate {
         }
     }
 
-    private suspend fun closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty: Boolean): TakeSausageResult {
+    private suspend fun closeSellPlatformAfterUserTake(
+        detectedSausageBeforeEmpty: Boolean,
+        closeReason: String
+    ): TakeSausageResult {
         val closeResult = executeActionWithRetry(
             actionName = "售卖台关门"
         ) {
@@ -322,9 +349,9 @@ object KaoChangOperate {
         } else {
             armPostSellSupplementGuard("售卖台关门成功")
             if (detectedSausageBeforeEmpty) {
-                logD(LOG_SELL_MONITOR, "售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+                logI(LOG_SELL_MONITOR, "售卖台关窗完成：关窗原因=$closeReason；售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
             } else {
-                logW(LOG_SELL_MONITOR, "售卖台监控阶段未检测到烤肠，但窗口已为空，按兼容策略判定客户已经把肠取走")
+                logW(LOG_SELL_MONITOR, "售卖台关窗完成：关窗原因=$closeReason；售卖台监控阶段未检测到烤肠，按兼容策略判定客户已经把肠取走")
             }
             TakeSausageResult.TAKEN_BY_USER
         }
@@ -352,9 +379,12 @@ object KaoChangOperate {
     ): TakeSausageResult {
         var consecutiveCaptureFailures = 0
         var detectedSausage = detectedSausageBeforeMonitor
+        var monitorRound = 0
         while (System.currentTimeMillis() < detectDeadlineMs) {
             delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
             val detectResult = captureSellPlatform()
+            monitorRound++
+            logSellPlatformCaptureResult("售卖台轮询阶段", monitorRound, detectResult)
             when {
                 detectResult == null -> {
                     consecutiveCaptureFailures++
@@ -373,7 +403,12 @@ object KaoChangOperate {
                 }
 
                 else -> {
-                    return closeSellPlatformAfterUserTake(detectedSausage)
+                    val closeReason = if (detectResult.code == 1) {
+                        "视觉识别到无肠(code=1)"
+                    } else {
+                        "视觉返回非有肠结果(code=${detectResult.code})"
+                    }
+                    return closeSellPlatformAfterUserTake(detectedSausage, closeReason)
                 }
             }
         }
@@ -389,9 +424,12 @@ object KaoChangOperate {
             "售卖台首次确认阶段连续拍照失败，进入兼容等待窗口；若视觉恢复则回到正常确认流程，若在等待时间内仍未恢复，则按已送达处理，不进入维护"
         )
         var loggedWaitingWithoutVision = false
+        var monitorRound = 0
         while (System.currentTimeMillis() < detectDeadlineMs) {
             delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
             val detectResult = captureSellPlatform()
+            monitorRound++
+            logSellPlatformCaptureResult("售卖台兼容等待阶段", monitorRound, detectResult)
             when {
                 detectResult == null -> {
                     if (!loggedWaitingWithoutVision) {
@@ -410,7 +448,15 @@ object KaoChangOperate {
 
                 else -> {
                     logW(LOG_SELL_MONITOR, "售卖台视觉已恢复，检测到窗口为空，按顾客已取走处理")
-                    return closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty = false)
+                    val closeReason = if (detectResult.code == 1) {
+                        "视觉恢复后识别到无肠(code=1)"
+                    } else {
+                        "视觉恢复后返回非有肠结果(code=${detectResult.code})"
+                    }
+                    return closeSellPlatformAfterUserTake(
+                        detectedSausageBeforeEmpty = false,
+                        closeReason = closeReason
+                    )
                 }
             }
         }
@@ -419,7 +465,10 @@ object KaoChangOperate {
             LOG_SELL_MONITOR,
             "售卖台首次确认阶段连续拍照失败，在兼容等待窗口内视觉仍未恢复；按机械已送达处理并执行关门，不进入维护"
         )
-        return closeSellPlatformAfterUserTake(detectedSausageBeforeEmpty = false)
+        return closeSellPlatformAfterUserTake(
+            detectedSausageBeforeEmpty = false,
+            closeReason = "兼容等待窗口结束，视觉仍未恢复，按机械已送达兜底关窗"
+        )
     }
 
     private suspend fun tryCloseSellPlatformOnError(reason: String) {

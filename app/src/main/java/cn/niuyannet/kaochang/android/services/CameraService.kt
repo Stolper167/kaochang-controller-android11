@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class CameraService : LifecycleService() {
     companion object {
         private const val CAMERA_OWNER = "camera_service"
+        private const val ANALYSIS_MODE_LOG_THROTTLE_MS = 30_000L
     }
 
     private data class SelectedCamera(
@@ -53,6 +54,8 @@ class CameraService : LifecycleService() {
     private val cameraLock = Any()
     private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val handler by lazy { Handler(Looper.getMainLooper()) }
+    private var lastAnalysisModeLogAtMs: Long = 0L
+    private var lastAnalysisModeLogKey: String? = null
 
     private val autoReleaseRunnable = Runnable {
         LogUtils.d("【相机服务】相机预热超时未使用，自动释放相机资源")
@@ -85,6 +88,26 @@ class CameraService : LifecycleService() {
         cameraExecutor.shutdown()
         LogUtils.d("【相机服务】后台相机服务已销毁")
         super.onDestroy()
+    }
+
+    private fun logAnalysisModeSelection(selectedCamera: SelectedCamera) {
+        val logKey = listOf(
+            selectedCamera.label,
+            selectedCamera.cameraId ?: "unknown",
+            selectedCamera.lensFacing?.toString() ?: "null",
+            selectedCamera.hardwareLevel?.toString() ?: "null"
+        ).joinToString("|")
+        val now = System.currentTimeMillis()
+        val shouldLog = logKey != lastAnalysisModeLogKey ||
+            now - lastAnalysisModeLogAtMs >= ANALYSIS_MODE_LOG_THROTTLE_MS
+        if (!shouldLog) {
+            return
+        }
+        lastAnalysisModeLogKey = logKey
+        lastAnalysisModeLogAtMs = now
+        LogUtils.w(
+            "【相机服务】检测到外置相机，切换为分析帧拍照模式：label=${selectedCamera.label}, cameraId=${selectedCamera.cameraId ?: "unknown"}, lensFacing=${selectedCamera.lensFacing}, hardwareLevel=${selectedCamera.hardwareLevel}"
+        )
     }
 
     private fun buildImageCaptureUseCase(): ImageCapture {
@@ -184,9 +207,7 @@ class CameraService : LifecycleService() {
                         if (useAnalysisSnapshot) {
                             imageCapture = null
                             provider.bindToLifecycle(this, selectedCamera.selector, imageAnalysis)
-                            LogUtils.w(
-                                "【相机服务】检测到外置相机，切换为分析帧拍照模式：label=${selectedCamera.label}, cameraId=${selectedCamera.cameraId ?: "unknown"}, lensFacing=${selectedCamera.lensFacing}, hardwareLevel=${selectedCamera.hardwareLevel}"
-                            )
+                            logAnalysisModeSelection(selectedCamera)
                         } else {
                             imageCapture = buildImageCaptureUseCase()
                             provider.bindToLifecycle(this, selectedCamera.selector, imageCapture, imageAnalysis)

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="blue_200">#90CAF9</color>
+    <color name="blue_500">#2196F3</color>
+    <color name="blue_700">#1976D2</color>
+    <color name="blue_accent">#448AFF</color>
+    <color name="blue_light">#BBDEFB</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="colorPrimary">#2196F3</color>
+    <color name="red">#FF0000</color>
+
+    <!-- 口味颜色 -->
+    <color name="taste_a">#FFA500</color>  <!-- 口味A - 橘色 -->
+    <color name="taste_b">#FFD700</color>  <!-- 口味B - 黄色 -->
+    <color name="taste_c">#8B4513</color>  <!-- 口味C - 棕色 -->
+
+    <!-- 新增的颜色定义 -->
+    <color name="primary">#FF2196F3</color>
+    <color name="primary_light">#BBDEFB</color>
+    <color name="gray">#757575</color>
+
+<!--    -->
+    <!-- 设备状态颜色 -->
+    <color name="status_offline">#757575</color>      <!-- 离线状态 - 灰色 -->
+    <color name="status_operating">#4CAF50</color>    <!-- 运营中 - 绿色 -->
+    <color name="status_resting">#FFA000</color>      <!-- 休息中 - 琥珀色 -->
+    <color name="status_maintaining">#FF5722</color>   <!-- 维护中 - 深橙色 -->
+    <color name="status_working">#2196F3</color>      <!-- 正在出烤肠 - 蓝色 -->
+</resources>

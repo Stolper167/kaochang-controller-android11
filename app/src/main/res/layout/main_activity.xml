@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/red_gradient">
+
+    <!-- 主内容布局 -->
+    <FrameLayout
+        android:layout_width="wrap_content"
+        android:visibility="gone"
+        android:layout_height="wrap_content">
+        <LinearLayout
+            android:id="@+id/mainContent"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:visibility="gone"
+            android:padding="24dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:orientation="vertical"
+                android:layout_weight="1"
+                android:layout_height="match_parent"
+                android:layout_marginEnd="12dp">
+
+                <!-- 设备信息卡片 -->
+                <androidx.cardview.widget.CardView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="24dp"
+                    app:cardBackgroundColor="#FFFFFF"
+                    >
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="horizontal"
+                        android:padding="20dp">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_weight="1"
+                            android:orientation="horizontal"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical">
+                            <ImageView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:src="@mipmap/logo"
+                                android:layout_marginEnd="16dp"/>
+                            <TextView
+                                android:id="@+id/deviceStatusText"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="未启用"
+                                android:textStyle="bold"
+                                android:textSize="32sp"
+                                android:textColor="@android:color/darker_gray"/>
+                        </LinearLayout>
+
+                    </LinearLayout>
+                </androidx.cardview.widget.CardView>
+
+                <!-- 二维码部分 -->
+                <androidx.cardview.widget.CardView
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    app:cardBackgroundColor="#FFFFFF"
+                    android:alpha="0.95">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:orientation="vertical"
+                        android:gravity="center"
+                        android:padding="32dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="微信扫码购买烤肠"
+                            android:textColor="@color/black"
+                            android:textSize="36sp"
+                            android:fontFamily="sans-serif-black"
+                            android:textStyle="bold"/>
+
+                        <!--                    <ImageView-->
+                        <!--                        android:id="@+id/qrCodeImage"-->
+                        <!--                        android:layout_width="match_parent"-->
+                        <!--                        android:layout_height="0dp"-->
+                        <!--                        android:padding="24dp"-->
+                        <!--                        android:layout_weight="1"-->
+                        <!--                        android:scaleType="fitCenter"-->
+                        <!--                        android:src="@drawable/img" />-->
+
+                        <TextView
+                            android:id="@+id/deviceNameText"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="设备名称："
+                            android:textSize="20sp"
+                            android:textStyle="bold"
+                            android:textColor="@color/gray"/>
+                        <!--                    <TextView-->
+                        <!--                        android:id="@+id/deviceIdText"-->
+                        <!--                        android:layout_width="wrap_content"-->
+                        <!--                        android:layout_height="wrap_content"-->
+                        <!--                        android:layout_marginTop="12dp"-->
+                        <!--                        android:text="设备ID："-->
+                        <!--                        android:textSize="18sp"-->
+                        <!--                        android:textColor="#424242"/>-->
+                    </LinearLayout>
+                </androidx.cardview.widget.CardView>
+
+            </LinearLayout>
+
+            <!-- 右侧内容部分 -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:layout_marginStart="12dp">
+
+                <androidx.cardview.widget.CardView
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:layout_marginBottom="24dp">
+
+                    <!--                <com.youth.banner.Banner-->
+                    <!--                    android:id="@+id/banner"-->
+                    <!--                    android:layout_width="match_parent"-->
+                    <!--                    android:layout_height="match_parent"/>-->
+
+                </androidx.cardview.widget.CardView>
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/configButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="64dp"
+                    android:text="运维管理"
+                    android:textSize="20sp"
+                    android:textStyle="bold"
+                    app:elevation="12dp"
+                    android:textColor="#FFFFFF"
+                    app:icon="@android:drawable/ic_menu_manage"
+                    app:iconSize="24dp"
+                    app:iconGravity="textStart"
+                    app:iconPadding="16dp"
+                    app:iconTint="#FFFFFF"
+                    android:letterSpacing="0.1"/>
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+        <com.youth.banner.Banner
+            android:id="@+id/banner"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <FrameLayout
+                android:id="@+id/ft"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clickable="true"></FrameLayout>
+        </com.youth.banner.Banner>
+
+       <RelativeLayout
+           android:layout_width="214dp"
+           android:layout_alignParentRight="true"
+           android:layout_alignParentBottom="true"
+           android:layout_margin="10dp"
+           android:layout_height="256dp">
+
+           <!-- 二维码背景 -->
+
+<!--           <ImageView-->
+<!--               android:layout_width="match_parent"-->
+<!--               android:src="@mipmap/qcode_bg"-->
+<!--               android:scaleType="fitXY"-->
+<!--               android:layout_height="match_parent"/>-->
+
+           <View
+               android:layout_width="match_parent"
+               android:layout_height="match_parent"
+               android:background="@drawable/bg_qrcode_glass"
+               android:elevation="12dp"/>
+           <!-- 扫码提示文字（高级感） -->
+           <TextView
+               android:id="@+id/tvScanTip"
+               android:layout_width="match_parent"
+               android:layout_height="wrap_content"
+               android:layout_marginTop="12dp"
+               android:layout_marginBottom="6dp"
+               android:gravity="center"
+               android:text="扫码下单 🍽️ 纯肉烤肠"
+               android:textSize="18sp"
+               android:textColor="#CCFFFFFF"
+               android:textStyle="bold"
+               android:letterSpacing="0.04"
+               android:includeFontPadding="false"
+               android:elevation="13dp"
+               android:visibility="visible"/>
+           <!-- 二维码 -->
+           <ImageView
+               android:id="@+id/qrCodeImage"
+               android:layout_width="213dp"
+               android:layout_height="233dp"
+               android:layout_marginTop="18dp"
+               android:elevation="14dp"
+               android:padding="22dp"
+               android:scaleType="fitCenter" />
+
+           <!-- 底部商标名-->
+           <TextView
+               android:id="@+id/tvBottomText"
+               android:layout_width="match_parent"
+               android:layout_height="wrap_content"
+               android:layout_marginTop="228dp"
+               android:layout_marginBottom="6dp"
+               android:gravity="center"
+               android:text="cheerluck"
+               android:textSize="18sp"
+               android:textColor="#CCFFFFFF"
+               android:textStyle="bold"
+               android:letterSpacing="0.04"
+               android:includeFontPadding="false"
+               android:elevation="13dp"/>
+
+       </RelativeLayout>
+
+        <TextView
+            android:id="@+id/tv_gly"
+            android:layout_width="wrap_content"
+            android:layout_alignParentRight="true"
+            android:textColor="@color/blue_200"
+            android:background="#0d000000"
+            android:padding="10dp"
+            android:text="管理员登录"
+            android:gravity="right"
+            android:layout_height="wrap_content"/>
+    </RelativeLayout>
+
+    <!-- 加载中布局 -->
+    <LinearLayout
+        android:id="@+id/loadingLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:background="#80000000"
+        android:gravity="center">
+
+        <ProgressBar
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:indeterminateTint="#FFFFFF"/>
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="系统启动中..."
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <!-- 空数据布局 -->
+    <LinearLayout
+        android:id="@+id/emptyLayout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:background="#80000000"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="150dp"
+            android:layout_height="150dp"
+            android:src="@android:drawable/ic_menu_report_image"
+            app:tint="#FFFFFF"/>
+
+        <TextView
+            android:id="@+id/tv_empty_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="暂无数据"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/refreshButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="32dp"
+            android:text="刷新"
+            android:textSize="18sp"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp"
+            android:paddingTop="12dp"
+            android:paddingBottom="12dp"
+            android:textColor="#FFFFFF"
+            app:cornerRadius="24dp"
+            app:icon="@android:drawable/ic_popup_sync"
+            app:iconTint="#FFFFFF"
+            app:backgroundTint="#FF5722"/>
+    </LinearLayout>
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/preview_view"
+        android:layout_width="1dp"
+        android:layout_height="1dp" />
+</FrameLayout>

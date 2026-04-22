@@ -1,0 +1,18 @@
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 低对比横向渐变，增强层次但不抢眼 -->
+    <gradient
+        android:startColor="#B3DB3C54"
+        android:centerColor="#D9DB3C54"
+        android:endColor="#B3DB3C54"
+        android:angle="0"/>
+
+    <!-- 比按钮小一点，更像系统提示 -->
+    <corners android:radius="14dp"/>
+
+    <!-- 极细描边，仅用于和背景分离 -->
+    <stroke
+        android:width="0.5dp"
+        android:color="#33FFFFFF"/>
+
+</shape>

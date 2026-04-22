@@ -1,0 +1,39 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 主背景：高级红渐变 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:startColor="#E14B63"
+                android:endColor="#C7364C"
+                android:angle="270"/>
+            <corners android:radius="28dp"/>
+        </shape>
+    </item>
+
+    <!-- 顶部柔光（提升质感） -->
+    <item android:top="2dp">
+        <shape>
+            <gradient
+                android:startColor="#14FFFFFF"
+                android:endColor="#00FFFFFF"
+                android:angle="270"/>
+            <corners android:radius="28dp"/>
+        </shape>
+    </item>
+
+    <!-- 中心 Logo 水印（缩小版） -->
+    <item
+        android:gravity="center"
+        android:insetLeft="48dp"
+        android:insetRight="48dp"
+        android:insetTop="48dp"
+        android:insetBottom="48dp">
+
+        <bitmap
+            android:src="@mipmap/logo2"
+            android:gravity="center"
+            android:alpha="18"/>
+    </item>
+
+</layer-list>

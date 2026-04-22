@@ -1,0 +1,26 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+# 忽略编译输出
+/build/
+/app/build/
+# 忽略所有 class 文件
+*.class
+.worktrees/
+/kaochang.jks
+/kaochang.sql
+/hs_err_pid*.log
+/replay_pid*.log
+/1742699970491.jpg

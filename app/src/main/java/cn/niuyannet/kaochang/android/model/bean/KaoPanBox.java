@@ -22,7 +22,7 @@ public class KaoPanBox implements Serializable {
     @SerializedName("last_position_sn")
     private int lastPositionSn; // 上一次取的位置
     @SerializedName("num")
-    private int num; // 当前箱位库存数量，新的加满口径为16根
+    private int num; // 当前箱位库存数量，新的加满口径为15根
     @SerializedName("taste_code")
     private String tasteCode; // 口味CODE
     @SerializedName("taste_name")

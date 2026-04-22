@@ -17,7 +17,7 @@ import java.util.Random
 class KaoPanBoxAdapter(private val callBack: (() -> Unit)? = null) : 
     RecyclerView.Adapter<KaoPanBoxAdapter.ViewHolder>() {
     private companion object {
-        const val BOX_FULL_CAPACITY = 16
+        const val BOX_FULL_CAPACITY = 15
     }
 
     private var dataList = mutableListOf<KaoPanBox>()

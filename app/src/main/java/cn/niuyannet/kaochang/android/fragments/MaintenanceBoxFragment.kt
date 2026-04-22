@@ -43,7 +43,7 @@ import kotlinx.coroutines.withContext
 class MaintenanceBoxFragment : Fragment() {
     private companion object {
         const val BOX_GRID_SPAN_COUNT = 11
-        const val BOX_REFILL_TARGET_NUM = 16
+        const val BOX_REFILL_TARGET_NUM = 15
     }
     private var _binding: FragmentMaintenanceBoxBinding? = null
     private val binding get() = _binding!!

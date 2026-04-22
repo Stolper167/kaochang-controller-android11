@@ -16,6 +16,7 @@ local.properties
 # 忽略编译输出
 /build/
 /app/build/
+**/build/
 # 忽略所有 class 文件
 *.class
 .worktrees/

@@ -643,8 +643,11 @@ object VMModbusHelper {
     internal fun describeWriteRegister(address: Int): String {
         val label = when (address) {
             200 -> "动作指令寄存器"
+            201 -> "动作状态寄存器"
             202 -> "烤盘搬移指令寄存器"
             203 -> "烤盘搬移结果寄存器"
+            204 -> "开关量控制寄存器"
+            205 -> "行程开关状态寄存器"
             206 -> "升降台目标寄存器"
             207 -> "售卖台动作寄存器"
             220 -> "卖肠分步协议命令寄存器"
@@ -691,6 +694,7 @@ object VMModbusHelper {
         val label = when (address) {
             200 -> describeActionRegisterValue(value)
             202 -> describeMoveRegisterValue(value)
+            204 -> describeSwitchRegisterValue(value)
             206 -> describeLiftRegisterValue(value)
             207 -> when (value) {
                 1 -> "关门"
@@ -802,6 +806,21 @@ object VMModbusHelper {
             mode > 0 -> "升降台目标：模式=$mode，worldY=$worldY"
             worldY > 0 -> "升降台目标：worldY=$worldY"
             else -> null
+        }
+    }
+
+    private fun describeSwitchRegisterValue(value: Int): String? {
+        val enabledSwitches = buildList {
+            if ((value and 0x01) != 0) add("加热管0=开")
+            if ((value and 0x02) != 0) add("加热管1=开")
+            if ((value and 0x04) != 0) add("加热管2=开")
+            if ((value and 0x08) != 0) add("冰箱=开")
+            if ((value and 0x10) != 0) add("照明=开")
+        }
+        return if (enabledSwitches.isEmpty()) {
+            "全部关闭"
+        } else {
+            enabledSwitches.joinToString(separator = "，")
         }
     }
 }

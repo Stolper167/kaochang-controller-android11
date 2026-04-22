@@ -9,13 +9,22 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.modbus.VMModbusHelper
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
 import cn.niuyannet.kaochang.android.services.SelfCleanFeatureToggle
+import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class TestFragment : Fragment() {
+    private data class RegisterSnapshot(
+        val register: Int,
+        val values: List<Int>
+    )
+
     private var _binding: FragmentTestBinding? = null
     private val binding: FragmentTestBinding
         get() = _binding!!
@@ -56,16 +65,13 @@ class TestFragment : Fragment() {
                 writeRegister(200, value.toInt(), "动作寄存器(200)")
             }
         }
+        binding.btnRunFormalSellFromAction.setOnClickListener {
+            runFormalSellFromActionInput()
+        }
 
         binding.btnReadActionGroupResult.setOnClickListener {
             readRegister(201, 1, "动作状态寄存器(201)") { value ->
-                val resultText = when (value[0]) {
-                    0 -> "0（空闲/完成）"
-                    1 -> "1（执行中）"
-                    2 -> "2（设备忙）"
-                    else -> "${value[0]}（未知）"
-                }
-                binding.tvActionGroupResult.text = resultText
+                binding.tvActionGroupResult.text = formatRegisterValue(201, value[0])
             }
         }
 
@@ -298,12 +304,206 @@ class TestFragment : Fragment() {
             }
             showToast("正在写入$description...")
             try {
-                withContext(Dispatchers.IO) {
-                    KaoChangOperate.writeSingleRegister(register, value)
+                val snapshots = withContext(Dispatchers.IO) {
+                    val beforeSnapshots = captureRegisterSnapshots(registersToObserveForWrite(register))
+                    val result = KaoChangOperate.writeSingleRegister(
+                        register,
+                        value,
+                        source = "TestFragment.writeRegister（测试下位机页面手动写寄存器）",
+                        action = "测试下位机手动写入${VMModbusHelper.describeWriteRegister(register)}"
+                    )
+                    val afterSnapshots = if (result.isSuccess) {
+                        observeRegisterSnapshotsAfterWrite(register, value)
+                    } else {
+                        emptyList()
+                    }
+                    Triple(beforeSnapshots, result, afterSnapshots)
+                }
+                val beforeSnapshots = snapshots.first
+                val writeResult = snapshots.second
+                val afterSnapshots = snapshots.third
+                logManualWriteTrace(
+                    register = register,
+                    value = value,
+                    description = description,
+                    beforeSnapshots = beforeSnapshots,
+                    writeResult = writeResult,
+                    afterSnapshots = afterSnapshots
+                )
+                if (!writeResult.isSuccess) {
+                    showToast("写入${description}失败：${writeResult.message ?: writeResult.status.name}")
                 }
             } catch (e: Exception) {
                 showToast("写入${description}失败: ${e.message}")
             }
+        }
+    }
+
+    private fun runFormalSellFromActionInput() {
+        val commandText = binding.etActionGroup.text?.toString()?.trim().orEmpty()
+        if (commandText.isEmpty()) {
+            showToast("请先输入 101~133 的动作组值")
+            return
+        }
+        val command = commandText.toIntOrNull()
+        if (command == null || command !in 101..133) {
+            showToast("运维模拟正常售卖仅支持 101~133（烤盘到售卖口）")
+            return
+        }
+        val positionSn = command - 100
+        val kaoPan = KaoPanHelper.getKaoPanByPosition(positionSn)
+        if (kaoPan == null) {
+            showToast("未找到烤盘$positionSn")
+            return
+        }
+        lifecycleScope.launch {
+            if (AppConfig.getAppConfig().moveStatus == 5) {
+                showToast("当前正在自清洁，不能模拟正常售卖")
+                return@launch
+            }
+            binding.tvActionGroupResult.text = "正式链路执行中：烤盘$positionSn"
+            LogUtils.i(
+                "【测试下位机】开始运维模拟正常售卖：" +
+                    "command200=${formatRegisterValue(200, command)}，pan=$positionSn，" +
+                    "hasSausage=${kaoPan.isHasSausage}，status=${kaoPan.status}，" +
+                    "说明=运维联调用途，已跳过“有肠且可售”前置校验，直接调用正式出餐链路 takeSausageResult，并继续执行售卖口视觉识别与关门/丢弃收尾"
+            )
+            val takeResult = runCatching {
+                withContext(Dispatchers.IO) {
+                    KaoChangOperate.takeSausageResult(kaoPan)
+                }
+            }.getOrElse { error ->
+                val message = "运维模拟正常售卖异常：pan=$positionSn, error=${error.message}"
+                LogUtils.e("【测试下位机】$message", error)
+                binding.tvActionGroupResult.text = "正式链路结果：ERROR（执行异常）"
+                showToast("执行异常：${error.message}")
+                return@launch
+            }
+            val resultText = when (takeResult) {
+                KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> "TAKEN_BY_USER（顾客已取走）"
+                KaoChangOperate.TakeSausageResult.DISCARDED -> "DISCARDED（超时未取，已丢弃）"
+                KaoChangOperate.TakeSausageResult.ERROR -> "ERROR（机械/视觉/通信异常）"
+            }
+            binding.tvActionGroupResult.text = "正式链路结果：$resultText"
+            LogUtils.i(
+                "【测试下位机】运维模拟正常售卖结束：" +
+                    "pan=$positionSn，result=$resultText"
+            )
+            showToast("正式链路结果：$resultText")
+        }
+    }
+
+    private suspend fun captureRegisterSnapshots(registers: List<Int>): List<RegisterSnapshot> {
+        return registers.map { register ->
+            RegisterSnapshot(
+                register = register,
+                values = listOfNotNull(readSingleRegisterValue(register))
+            )
+        }
+    }
+
+    private suspend fun observeRegisterSnapshotsAfterWrite(
+        register: Int,
+        value: Int
+    ): List<RegisterSnapshot> {
+        val registers = registersToObserveForWrite(register)
+        val pollDelays = when (register) {
+            200, 202 -> listOf(0L, 300L, 800L, 1500L, 3000L)
+            else -> listOf(0L, 200L)
+        }
+        val observedValues = linkedMapOf<Int, MutableList<Int>>()
+        registers.forEach { observedValues[it] = mutableListOf() }
+
+        pollDelays.forEachIndexed { index, delayMs ->
+            if (index > 0) {
+                delay(delayMs)
+            }
+            registers.forEach { targetRegister ->
+                val currentValue = readSingleRegisterValue(targetRegister) ?: return@forEach
+                val history = observedValues.getValue(targetRegister)
+                if (history.isEmpty() || history.last() != currentValue) {
+                    history += currentValue
+                }
+            }
+        }
+
+        if (register == 200 && observedValues[register].isNullOrEmpty()) {
+            observedValues[register]?.add(value)
+        }
+
+        return observedValues.map { (targetRegister, values) ->
+            RegisterSnapshot(targetRegister, values.toList())
+        }
+    }
+
+    private suspend fun readSingleRegisterValue(register: Int): Int? {
+        return KaoChangOperate.readHoldingRegisters(register, 1)?.firstOrNull()
+    }
+
+    private fun registersToObserveForWrite(register: Int): List<Int> {
+        return when (register) {
+            200 -> listOf(200, 201)
+            202 -> listOf(202, 203)
+            204, 503, 504, 505 -> listOf(register)
+            else -> listOf(register)
+        }
+    }
+
+    private fun logManualWriteTrace(
+        register: Int,
+        value: Int,
+        description: String,
+        beforeSnapshots: List<RegisterSnapshot>,
+        writeResult: VMModbusHelper.ModbusOperationResult,
+        afterSnapshots: List<RegisterSnapshot>
+    ) {
+        val builder = StringBuilder()
+            .append("【测试下位机】手动写寄存器：")
+            .append("description=").append(description)
+            .append("，target=").append(VMModbusHelper.describeWriteRegister(register))
+            .append("，request=").append(formatRegisterValue(register, value))
+            .append("，writeResult=").append(VMModbusHelper.describeWriteResult(writeResult.status))
+
+        beforeSnapshots.forEach { snapshot ->
+            builder.append("\n  写前 ")
+                .append(VMModbusHelper.describeWriteRegister(snapshot.register))
+                .append(" = ")
+                .append(formatSnapshotValues(snapshot.register, snapshot.values))
+        }
+        afterSnapshots.forEach { snapshot ->
+            builder.append("\n  写后变化 ")
+                .append(VMModbusHelper.describeWriteRegister(snapshot.register))
+                .append(" = ")
+                .append(formatSnapshotValues(snapshot.register, snapshot.values))
+        }
+        if (!writeResult.message.isNullOrBlank()) {
+            builder.append("\n  message=").append(writeResult.message)
+        }
+        LogUtils.i(builder.toString())
+    }
+
+    private fun formatSnapshotValues(register: Int, values: List<Int>): String {
+        if (values.isEmpty()) {
+            return "读取失败"
+        }
+        return values.joinToString(separator = " -> ") { formatRegisterValue(register, it) }
+    }
+
+    private fun formatRegisterValue(register: Int, value: Int): String {
+        return when (register) {
+            200, 202, 204, 503, 504, 505 ->
+                VMModbusHelper.describeWriteValue(register, value)
+            201, 203 -> when (value) {
+                0 -> "0（空闲/完成）"
+                1 -> "1（执行中）"
+                2 -> "2（设备忙）"
+                else -> "$value（未知状态）"
+            }
+            205 -> {
+                val binaryString = Integer.toBinaryString(value).padStart(16, '0')
+                "$value（二进制=$binaryString）"
+            }
+            else -> value.toString()
         }
     }
 

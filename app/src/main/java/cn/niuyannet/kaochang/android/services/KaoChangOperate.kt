@@ -468,8 +468,9 @@ object KaoChangOperate {
     }
 
     private fun getPanTasteLabel(kaoPan: KaoPan): String {
-        return kaoPan.taste.productName?.takeIf { it.isNotBlank() }
-            ?: kaoPan.taste.tasteName?.takeIf { it.isNotBlank() }
+        val taste = kaoPan.taste
+        return taste?.productName?.takeIf { it.isNotBlank() }
+            ?: taste?.tasteName?.takeIf { it.isNotBlank() }
             ?: "未知口味"
     }
 
@@ -1669,14 +1670,20 @@ object KaoChangOperate {
     /**
      * 写入寄存器的值
      */
-    fun writeSingleRegister(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
+    fun writeSingleRegister(
+        address: Int,
+        value:Int,
+        source: String = "KaoChangOperate.writeSingleRegister（立即写寄存器入口）",
+        action: String? = null
+    ): VMModbusHelper.ModbusOperationResult{
         logD(LOG_DEVICE, "写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
         return VMModbusHelper.writeSingleRegister(
             modbus_address,
             address,
             value,
             traceContext = VMModbusHelper.ModbusWriteTraceContext(
-                source = "KaoChangOperate.writeSingleRegister（立即写寄存器入口）"
+                source = source,
+                action = action
             )
         )
 

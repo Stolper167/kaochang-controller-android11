@@ -5,9 +5,6 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -15,10 +12,9 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
+import cn.niuyannet.kaochang.android.utils.CameraFrameUtils
 import cn.niuyannet.kaochang.android.utils.LogUtils
-import org.opencv.android.Utils
 import org.opencv.core.Mat
-import org.opencv.imgproc.Imgproc
 import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.atomic.AtomicBoolean
@@ -300,38 +296,7 @@ class CameraMonitor {
     }
 
     private fun imageProxyToMat(imageProxy: ImageProxy): Mat? {
-        return try {
-            val buffer = imageProxy.planes[0].buffer
-            val bytes = ByteArray(buffer.remaining())
-            buffer[bytes]
-
-            var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            val rotation = imageProxy.imageInfo.rotationDegrees
-            if (rotation != 0) {
-                val matrix = Matrix()
-                matrix.postRotate(rotation.toFloat())
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            }
-
-            var mat = Mat()
-            Utils.bitmapToMat(bitmap, mat)
-
-            if (mat.channels() == 4) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_RGBA2BGR)
-                mat.release()
-                mat = bgrMat
-            } else if (mat.channels() == 1) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_GRAY2BGR)
-                mat.release()
-                mat = bgrMat
-            }
-            mat
-        } catch (e: Exception) {
-            sellPhotoE("图像转换失败：${e.message}")
-            null
-        }
+        return CameraFrameUtils.imageProxyToMat(imageProxy, "【售卖口拍照】")
     }
 
     @SuppressLint("DefaultLocale")

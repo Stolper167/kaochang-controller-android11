@@ -1,8 +1,5 @@
 package cn.niuyannet.kaochang.android.utils
 
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.util.Size
 import android.view.Surface
 import androidx.camera.core.Camera
@@ -26,9 +23,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import org.opencv.android.Utils
 import org.opencv.core.Mat
-import org.opencv.imgproc.Imgproc
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
@@ -308,39 +303,7 @@ object SauceDetectionUitls {
     }
 
     private fun imageProxyToMat(imageProxy: ImageProxy): Mat? {
-        return try {
-            val buffer = imageProxy.planes[0].buffer
-            val bytes = ByteArray(buffer.remaining())
-            buffer[bytes]
-
-            var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            val rotation = imageProxy.imageInfo.rotationDegrees
-            if (rotation != 0) {
-                val matrix = Matrix()
-                matrix.postRotate(rotation.toFloat())
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            }
-
-            var mat = Mat()
-            Utils.bitmapToMat(bitmap, mat)
-
-            if (mat.channels() == 4) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_RGBA2BGR)
-                mat.release()
-                mat = bgrMat
-            } else if (mat.channels() == 1) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_GRAY2BGR)
-                mat.release()
-                mat = bgrMat
-            }
-
-            mat
-        } catch (e: Exception) {
-            logPhotoError("KaoChangAlgorithm", "图像转换失败：${e.message}")
-            null
-        }
+        return CameraFrameUtils.imageProxyToMat(imageProxy, "【售卖口拍照】")
     }
 
     /**

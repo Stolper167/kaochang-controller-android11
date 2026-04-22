@@ -18,6 +18,7 @@ import androidx.lifecycle.LifecycleService
 import cn.niuyannet.kaochang.android.R
 import cn.niuyannet.kaochang.android.detecition.SauceDetectionProcessor
 import cn.niuyannet.kaochang.android.ui.MainActivity
+import cn.niuyannet.kaochang.android.utils.CameraFrameUtils
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import kotlinx.coroutines.*
 import java.io.File
@@ -27,12 +28,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import org.opencv.android.Utils
 import org.opencv.core.Mat
-import org.opencv.imgproc.Imgproc
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import cn.niuyannet.kaochang.android.MyApp.Companion.instance
 
 class PhotoCaptureService : LifecycleService() {
@@ -570,39 +566,7 @@ class PhotoCaptureService : LifecycleService() {
     }
     
     private fun imageProxyToMat(imageProxy: ImageProxy): Mat? {
-        return try {
-            val buffer = imageProxy.planes[0].buffer
-            val bytes = ByteArray(buffer.remaining())
-            buffer[bytes]
-
-            var bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            val rotation = imageProxy.imageInfo.rotationDegrees
-            if (rotation != 0) {
-                val matrix = Matrix()
-                matrix.postRotate(rotation.toFloat())
-                bitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            }
-            
-            var mat = Mat()
-            Utils.bitmapToMat(bitmap, mat)
-
-            if (mat.channels() == 4) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_RGBA2BGR)
-                mat.release()
-                mat = bgrMat
-            } else if (mat.channels() == 1) {
-                val bgrMat = Mat()
-                Imgproc.cvtColor(mat, bgrMat, Imgproc.COLOR_GRAY2BGR)
-                mat.release()
-                mat = bgrMat
-            }
-            
-            mat
-        } catch (e: Exception) {
-            LogUtils.e("【拍照服务】ImageProxy 转 Mat 失败：${e.message}", e)
-            null
-        }
+        return CameraFrameUtils.imageProxyToMat(imageProxy, "【拍照服务】")
     }
     
     private fun detectSausageSync(img: Mat?): SauceDetectionProcessor.SausageInfo? {

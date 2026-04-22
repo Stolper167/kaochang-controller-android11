@@ -26,6 +26,8 @@ object LowCurrentTrafficMode {
     var TEMPERATURE_OFF = 0
 
     private var lastLowTrafficSnapshot: String? = null
+    private var lastLowSupplementGateSnapshot: String? = null
+    private var lastFrontKeepWarmAssistActive = false
 
     private fun modeText(value: Int): String = when (value) {
         1 -> "1(低并发)"
@@ -46,6 +48,88 @@ object LowCurrentTrafficMode {
         2 -> "2(补 16~18 补热区)"
         3 -> "3(补热区已空，可关闭 2 区加热)"
         else -> "$value(未知)"
+    }
+
+    private fun positionsText(list: List<KaoPan>, predicate: (KaoPan) -> Boolean): String {
+        val positions = list.filter(predicate).map { it.positionSn }
+        return if (positions.isEmpty()) "[]" else positions.joinToString(prefix = "[", postfix = "]")
+    }
+
+    internal fun reserveFrontSupplementCandidates(
+        candidates: List<KaoPan>,
+        count: Int
+    ): List<Int> {
+        val selectedCandidates = candidates.take(count)
+        selectedCandidates.forEach { it.isHasGrilling = true }
+        return selectedCandidates.map { it.positionSn }
+    }
+
+    internal fun clearStaleFrontReservations(
+        frontPositions: List<KaoPan>,
+        supplementPositions: List<KaoPan>
+    ): List<Int> {
+        val supplementAreaOccupied = supplementPositions.any { it.isHasSausage }
+        if (supplementAreaOccupied) {
+            return emptyList()
+        }
+
+        val staleReservedPositions = frontPositions.filter { !it.isHasSausage && it.isHasGrilling }
+        staleReservedPositions.forEach { it.isHasGrilling = false }
+        return staleReservedPositions.map { it.positionSn }
+    }
+
+    internal fun shouldKeepWarmFrontZoneDuringSupplementHeating(
+        frontPositions: List<KaoPan>,
+        supplementPositions: List<KaoPan>
+    ): Boolean {
+        val hasFrontKeepWarmSausage = frontPositions.any {
+            it.isHasSausage && (it.status == 2 || it.holdingTime > 0L)
+        }
+        val hasSupplementHeatingSausage = supplementPositions.any {
+            it.isHasSausage && (it.status == 1 || it.startTime > 0L)
+        }
+        return hasFrontKeepWarmSausage && hasSupplementHeatingSausage
+    }
+
+    private fun logLowSupplementGateIfNeeded(
+        config: AppConfigBean,
+        list1_9: List<KaoPan>,
+        list13_15: List<KaoPan>,
+        list16_18: List<KaoPan>,
+        p1_9: Int,
+        p13_15: Int,
+        p16_18: Int,
+        supplementDecision: Int,
+        boxSupplyAvailable: Boolean,
+        schedulingEnabled: Boolean,
+        isBeforeCloseWindow: Boolean
+    ) {
+        val frontEmptyPositions = positionsText(list1_9) { !it.isHasSausage }
+        val frontGrillingReservedPositions = positionsText(list1_9) { !it.isHasSausage && it.isHasGrilling }
+        val frontSupplementCandidates = positionsText(list1_9) { !it.isHasSausage && !it.isHasGrilling }
+        val emptyPositions13_15 = positionsText(list13_15) { !it.isHasSausage }
+        val emptyPositions16_18 = positionsText(list16_18) { !it.isHasSausage }
+        val stateSnapshot =
+            "front=$p1_9|13_15=$p13_15|16_18=$p16_18|decision=$supplementDecision|box=$boxSupplyAvailable|schedule=$schedulingEnabled|beforeClose=$isBeforeCloseWindow|error=${config.errorStatus}|empty1_9=$frontEmptyPositions|grilling1_9=$frontGrillingReservedPositions|candidate1_9=$frontSupplementCandidates|empty13_15=$emptyPositions13_15|empty16_18=$emptyPositions16_18"
+        if (stateSnapshot == lastLowSupplementGateSnapshot) {
+            return
+        }
+        lastLowSupplementGateSnapshot = stateSnapshot
+        LogUtils.d(
+            TAG,
+            "【低并发补肠门槛】判定快照：" +
+                "1~9空位=$p1_9，13~15空位=$p13_15，16~18空位=$p16_18，" +
+                "补肠决策=${lowSupplementStateText(supplementDecision)}，" +
+                "boxSupplyAvailable（本地烤肠箱有库存）=$boxSupplyAvailable，" +
+                "schedulingEnabled（算法调度开启）=$schedulingEnabled，" +
+                "isBeforeCloseWindow（停业前收口窗口）=$isBeforeCloseWindow，" +
+                "errorStatus=${config.errorStatus}，" +
+                "frontEmptyPositions（1~9空盘）=$frontEmptyPositions，" +
+                "frontGrillingReservedPositions（1~9已预留补肠）=$frontGrillingReservedPositions，" +
+                "frontSupplementCandidates（1~9可作为补肠目标空盘）=$frontSupplementCandidates，" +
+                "emptyPositions13_15=$emptyPositions13_15，" +
+                "emptyPositions16_18=$emptyPositions16_18"
+        )
     }
 
     /**
@@ -69,6 +153,14 @@ object LowCurrentTrafficMode {
         val list13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, kaoPanList)
         val list16_18 = TrafficModeHelper.getTrafficModePositions(16, 18, kaoPanList)
+        val clearedReservedPositions = clearStaleFrontReservations(list1_9, list13_18)
+        if (clearedReservedPositions.isNotEmpty()) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】清理前区残留预留标记：" +
+                    "positions=$clearedReservedPositions，原因=13~18 补热区已空，但前区空盘仍存在 isHasGrilling=true"
+            )
+        }
 
         val p1_9 = list1_9.count { !it.isHasSausage }
         val p13_18 = list13_18.count { !it.isHasSausage }
@@ -91,9 +183,42 @@ object LowCurrentTrafficMode {
         val isBeforeCloseWindow =
             KaoPanHelper.isBeforeBusinessHours(config.businessTime, beforeCloseMinutes)
 
+        if (p1_9 >= 3 || supplementDecision != 0 || p13_15 < list13_15.size || p16_18 < list16_18.size) {
+            logLowSupplementGateIfNeeded(
+                config = config,
+                list1_9 = list1_9,
+                list13_15 = list13_15,
+                list16_18 = list16_18,
+                p1_9 = p1_9,
+                p13_15 = p13_15,
+                p16_18 = p16_18,
+                supplementDecision = supplementDecision,
+                boxSupplyAvailable = boxSupplyAvailable,
+                schedulingEnabled = schedulingEnabled,
+                isBeforeCloseWindow = isBeforeCloseWindow
+            )
+        }
+
+        val keepWarmAssistActive = shouldKeepWarmFrontZoneDuringSupplementHeating(list1_9, list13_18)
+        if (keepWarmAssistActive && !lastFrontKeepWarmAssistActive) {
+            LogUtils.i(
+                TAG,
+                "【加热控制】检测到 1 区存在保温烤肠且 13~18 补热区正在加热，补写 1 区保温温度"
+            )
+            KaoChangOperate.keepWarm(1)
+        }
+        lastFrontKeepWarmAssistActive = keepWarmAssistActive
+
         if (totalEmpty == list1_9.size + list13_18.size) {
             if (schedulingEnabled && boxSupplyAvailable && config.errorStatus == 0 && !isBeforeCloseWindow) {
                 initLowTrafficMode(kaoPanList, listBox)
+            } else {
+                LogUtils.w(
+                    TAG,
+                    "【低并发初始化】跳过初始化：" +
+                        "schedulingEnabled=$schedulingEnabled，boxSupplyAvailable=$boxSupplyAvailable，" +
+                        "errorStatus=${config.errorStatus}，isBeforeCloseWindow=$isBeforeCloseWindow"
+                )
             }
         } else if (p1_9 >= list13_15.size || p13_18 < list13_18.size) {
             if (p16_18 < list16_18.size) {
@@ -112,6 +237,16 @@ object LowCurrentTrafficMode {
                 TEMPERATURE_OFF = 0
                 addLowHeatSausage16_18(kaoPanList, listBox, list16_18.size)
                 LogUtils.i(TAG, "【低并发补肠】已向 16~18 补热区补肠")
+            } else if (supplementDecision == 1 || supplementDecision == 2) {
+                LogUtils.w(
+                    TAG,
+                    "【低并发补肠】本轮未执行补肠：" +
+                        "补肠决策=${lowSupplementStateText(supplementDecision)}，" +
+                        "schedulingEnabled=$schedulingEnabled，" +
+                        "boxSupplyAvailable=$boxSupplyAvailable，" +
+                        "errorStatus=${config.errorStatus}，" +
+                        "isBeforeCloseWindow=$isBeforeCloseWindow"
+                )
             }
         }
 
@@ -326,6 +461,10 @@ object LowCurrentTrafficMode {
         val list13_15 = TrafficModeHelper.getTrafficModePositions(13, 15, list)
         val hasSausageIn13_15 = list13_15.any { it.isHasSausage }
         if (hasSausageIn13_15) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】跳过 13~15 补热区补肠：13~15 已有烤肠，occupied=${positionsText(list13_15) { it.isHasSausage }}"
+            )
             return
         }
 
@@ -339,17 +478,42 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 13~15 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
+            LogUtils.d(
+                TAG,
+                "【低并发补肠】准备向 13~15 补热区补肠：" +
+                    "frontCandidates=${emptyPositions.take(pNum).map { it.positionSn }}，" +
+                    "targetPositions=${emptyPositions13_15.take(pNum).map { it.positionSn }}，" +
+                    "neededTastes=$neededTastes"
+            )
             neededTastes.forEachIndexed { index, tasteCode ->
                 val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
+                if (matchingBox == null) {
+                    LogUtils.w(
+                        TAG,
+                        "【低并发补肠】13~15 补热区补肠缺少对应库存箱：tasteCode=$tasteCode，index=$index"
+                    )
+                }
                 matchingBox?.let { box ->
                     if (box.num > 0) {
                         val targetPosition = emptyPositions13_15[index]
                         targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                         KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
+                    } else {
+                        LogUtils.w(
+                            TAG,
+                            "【低并发补肠】13~15 补热区补肠跳过空库存箱：boxPosition=${box.positionSn}，tasteCode=$tasteCode，num=${box.num}"
+                        )
                     }
                 }
             }
-            emptyPositions.forEach { it.isHasGrilling = true }
+            reserveFrontSupplementCandidates(emptyPositions, pNum)
+        } else {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】跳过 13~15 补热区补肠：可补前区空盘不足或补热区空位不足，" +
+                    "required=$pNum，frontCandidates=${emptyPositions.map { it.positionSn }}，" +
+                    "targetEmpty=${emptyPositions13_15.map { it.positionSn }}"
+            )
         }
     }
 
@@ -365,6 +529,10 @@ object LowCurrentTrafficMode {
         val list16_18 = TrafficModeHelper.getTrafficModePositions(16, 18, list)
         val hasSausageIn16_18 = list16_18.any { it.isHasSausage }
         if (hasSausageIn16_18) {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】跳过 16~18 补热区补肠：16~18 已有烤肠，occupied=${positionsText(list16_18) { it.isHasSausage }}"
+            )
             return
         }
 
@@ -378,17 +546,42 @@ object LowCurrentTrafficMode {
                 LogUtils.w(TAG, "【低并发补肠】跳过 16~18 补热区补肠：前区空盘口味预留不足，empty=${emptyPositions.size}，reserved=${neededTastes.size}")
                 return
             }
+            LogUtils.d(
+                TAG,
+                "【低并发补肠】准备向 16~18 补热区补肠：" +
+                    "frontCandidates=${emptyPositions.take(pNum).map { it.positionSn }}，" +
+                    "targetPositions=${emptyPositions16_18.take(pNum).map { it.positionSn }}，" +
+                    "neededTastes=$neededTastes"
+            )
             neededTastes.forEachIndexed { index, tasteCode ->
                 val matchingBox = TrafficModeHelper.findSupplyBoxByTaste(listBox, tasteCode)
+                if (matchingBox == null) {
+                    LogUtils.w(
+                        TAG,
+                        "【低并发补肠】16~18 补热区补肠缺少对应库存箱：tasteCode=$tasteCode，index=$index"
+                    )
+                }
                 matchingBox?.let { box ->
                     if (box.num > 0) {
                         val targetPosition = emptyPositions16_18[index]
                         targetPosition.taste = Taste().apply { this.tasteCode = tasteCode }
                         KaoChangOperate.moveSausageToKaoPan(targetPosition, box)
+                    } else {
+                        LogUtils.w(
+                            TAG,
+                            "【低并发补肠】16~18 补热区补肠跳过空库存箱：boxPosition=${box.positionSn}，tasteCode=$tasteCode，num=${box.num}"
+                        )
                     }
                 }
             }
-            emptyPositions.forEach { it.isHasGrilling = true }
+            reserveFrontSupplementCandidates(emptyPositions, pNum)
+        } else {
+            LogUtils.w(
+                TAG,
+                "【低并发补肠】跳过 16~18 补热区补肠：可补前区空盘不足或补热区空位不足，" +
+                    "required=$pNum，frontCandidates=${emptyPositions.map { it.positionSn }}，" +
+                    "targetEmpty=${emptyPositions16_18.map { it.positionSn }}"
+            )
         }
     }
 

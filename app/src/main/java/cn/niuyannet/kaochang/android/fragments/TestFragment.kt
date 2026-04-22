@@ -10,6 +10,7 @@ import androidx.lifecycle.lifecycleScope
 import cn.niuyannet.kaochang.android.databinding.FragmentTestBinding
 import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.services.SelfCleanFeatureToggle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -136,6 +137,12 @@ class TestFragment : Fragment() {
 
     private fun setupSelfCleanListeners() {
         binding.btnRunPanSelfClean.setOnClickListener {
+            if (!SelfCleanFeatureToggle.isEnabled()) {
+                val message = SelfCleanFeatureToggle.disabledReasonText()
+                binding.tvSelfCleanResult.text = message
+                showToast(message)
+                return@setOnClickListener
+            }
             val text = binding.etSelfCleanPosition.text?.toString()?.trim().orEmpty()
             if (text.isEmpty()) {
                 showToast("请输入 1~33 号烤盘位")
@@ -160,6 +167,12 @@ class TestFragment : Fragment() {
         }
 
         binding.btnRunSellPlatformSelfClean.setOnClickListener {
+            if (!SelfCleanFeatureToggle.isEnabled()) {
+                val message = SelfCleanFeatureToggle.disabledReasonText()
+                binding.tvSelfCleanResult.text = message
+                showToast(message)
+                return@setOnClickListener
+            }
             lifecycleScope.launch {
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
                 val report = withContext(Dispatchers.IO) {

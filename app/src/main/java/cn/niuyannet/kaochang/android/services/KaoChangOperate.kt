@@ -615,6 +615,14 @@ object KaoChangOperate {
         )
     }
 
+    private fun buildSelfCleanDisabledReport(targetLabel: String, source: String): SelfCleanExecutionReport {
+        return SelfCleanFeatureToggle.buildDisabledExecutionReport(targetLabel)
+    }
+
+    private fun buildSelfCleanDisabledSequenceResult(source: String): SelfCleanSequenceResult {
+        return SelfCleanFeatureToggle.buildDisabledSequenceResult()
+    }
+
     private fun markSelfCleanFailure(targetLabel: String, result: ActionExecutionResult) {
         val config = AppConfig.getAppConfig()
         config.errorStatus = 2
@@ -682,6 +690,9 @@ object KaoChangOperate {
         source: String,
         busyDuringClean: Boolean
     ): SelfCleanExecutionReport {
+        if (!SelfCleanFeatureToggle.isEnabled()) {
+            return buildSelfCleanDisabledReport("烤盘$positionSn", source)
+        }
         val command = buildSelfCleanCommand(positionSn)
         return runPanSelfCleanSequence(
             listOf(positionSn),
@@ -702,6 +713,9 @@ object KaoChangOperate {
         source: String,
         busyDuringClean: Boolean
     ): SelfCleanExecutionReport {
+        if (!SelfCleanFeatureToggle.isEnabled()) {
+            return buildSelfCleanDisabledReport("出肠台", source)
+        }
         return runPanSelfCleanSequence(
             emptyList(),
             includeSellPlatform = true,
@@ -724,6 +738,9 @@ object KaoChangOperate {
         source: String,
         busyDuringClean: Boolean = false
     ): SelfCleanSequenceResult {
+        if (!SelfCleanFeatureToggle.isEnabled()) {
+            return buildSelfCleanDisabledSequenceResult(source)
+        }
         val uniquePositions = positionSnList.distinct().sorted()
         val config = AppConfig.getAppConfig()
         if (config.errorStatus != 0) {
@@ -1537,6 +1554,16 @@ object KaoChangOperate {
         //执行丢弃操作
         try {
             KaoChangAlgorithm.resetKaoPan()
+            if (!SelfCleanFeatureToggle.isEnabled()) {
+                config.zone3Dirty = 0
+                config.zone3CleanPending = 0
+                AppConfig.saveAppConfig(config)
+                logI(
+                    LOG_SELF_CLEAN,
+                    "营业结束：已跳过全量自清洁，reason=${SelfCleanFeatureToggle.disabledReasonText()}"
+                )
+                return
+            }
             val selfCleanResult = runPanSelfCleanSequence(
                 positionSnList = (1..33).toList(),
                 includeSellPlatform = true,

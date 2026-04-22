@@ -19,6 +19,21 @@ object SelfCleanManager {
     private fun logI(message: String) = LogUtils.i("[$LOG_SELF_CLEAN] $message")
     private fun logW(message: String) = LogUtils.w("[$LOG_SELF_CLEAN] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SELF_CLEAN] $message")
+    fun isFeatureEnabled(): Boolean = SelfCleanFeatureToggle.isEnabled()
+
+    private fun clearZone3FlagsIfNeeded(reason: String) {
+        val config = AppConfig.getAppConfig()
+        if (config.zone3Dirty == 0 && config.zone3CleanPending == 0) {
+            return
+        }
+        config.zone3Dirty = 0
+        config.zone3CleanPending = 0
+        AppConfig.saveAppConfig(config)
+        logI(
+            "自清洁总开关关闭，已清理三区自清洁标记 | reason=$reason，" +
+                "zone3Dirty=false，zone3CleanPending=false"
+        )
+    }
 
     fun beginOrderTracking(orderNo: String?) {
         if (orderNo.isNullOrBlank()) {
@@ -60,6 +75,10 @@ object SelfCleanManager {
     }
 
     fun markZone3Dirty() {
+        if (!isFeatureEnabled()) {
+            clearZone3FlagsIfNeeded("忽略三区置脏")
+            return
+        }
         val config = AppConfig.getAppConfig()
         if (config.zone3Dirty == 1 && config.zone3CleanPending == 0) {
             return
@@ -71,6 +90,10 @@ object SelfCleanManager {
     }
 
     fun markZone3CleanPendingIfNeeded(list: List<KaoPan>) {
+        if (!isFeatureEnabled()) {
+            clearZone3FlagsIfNeeded("忽略三区待执行标记")
+            return
+        }
         val config = AppConfig.getAppConfig()
         if (config.zone3Dirty != 1 || config.zone3CleanPending == 1) {
             return
@@ -85,6 +108,10 @@ object SelfCleanManager {
     }
 
     suspend fun maybeRunZone3SelfClean(list: List<KaoPan>): Boolean {
+        if (!isFeatureEnabled()) {
+            clearZone3FlagsIfNeeded("跳过三区自动自清洁")
+            return false
+        }
         val config = AppConfig.getAppConfig()
         if (config.zone3CleanPending != 1 || config.zone3Dirty != 1) {
             return false

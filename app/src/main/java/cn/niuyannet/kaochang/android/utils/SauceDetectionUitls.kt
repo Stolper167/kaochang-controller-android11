@@ -366,8 +366,8 @@ object SauceDetectionUitls {
         } finally {
             img?.release()
             if (SauceDetector.SAVE_DEBUG_IMAGES) {
-                val cacheDir = instance().cacheDir.absolutePath
-                logDetect("调试图片已保存到：$cacheDir")
+                val debugDir = SauceDetector.getDebugImageDirPath()
+                logDetect("调试图片目录：$debugDir")
             }
         }
     }

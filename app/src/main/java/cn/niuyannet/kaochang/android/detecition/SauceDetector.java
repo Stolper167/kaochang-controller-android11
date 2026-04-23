@@ -24,6 +24,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import cn.niuyannet.kaochang.android.MyApp;
+import cn.niuyannet.kaochang.android.utils.LogUtils;
 
 /**
  * 烤肠检测工具类
@@ -33,7 +34,66 @@ public class SauceDetector {
     private static final String TAG = "SauceDetector";
     
     // 是否保存中间处理结果的图像用于调试
-    public static final boolean SAVE_DEBUG_IMAGES = false;
+    public static final boolean SAVE_DEBUG_IMAGES = true;
+    private static final String DEBUG_IMAGE_DIR_NAME = "vision_debug";
+
+    public static class DetectionTuning {
+        public final int kernelSize;
+        public final int openIterations;
+        public final int closeIterations;
+        public final double minArea;
+        public final double maxArea;
+        public final double minAspectRatio;
+        public final double maxAspectRatio;
+        public final int minCenterX;
+        public final String label;
+
+        public DetectionTuning(
+                int kernelSize,
+                int openIterations,
+                int closeIterations,
+                double minArea,
+                double maxArea,
+                double minAspectRatio,
+                double maxAspectRatio,
+                int minCenterX,
+                String label
+        ) {
+            this.kernelSize = kernelSize;
+            this.openIterations = openIterations;
+            this.closeIterations = closeIterations;
+            this.minArea = minArea;
+            this.maxArea = maxArea;
+            this.minAspectRatio = minAspectRatio;
+            this.maxAspectRatio = maxAspectRatio;
+            this.minCenterX = minCenterX;
+            this.label = label;
+        }
+    }
+
+    public static final DetectionTuning DEFAULT_TUNING = new DetectionTuning(
+            4,
+            4,
+            2,
+            400,
+            7000,
+            0.25,
+            2.0,
+            65,
+            "default"
+    );
+
+    public static final DetectionTuning SALES_PLATFORM_TUNING = new DetectionTuning(
+            3,
+            2,
+            2,
+            180,
+            12000,
+            0.12,
+            4.0,
+            0,
+            "sales_platform_relaxed"
+    );
 
     static {
         // 初始化OpenCV库
@@ -69,17 +129,21 @@ public class SauceDetector {
             // 转换为位图
             Utils.matToBitmap(matToSave, bitmap);
             
-            // 保存到文件
-            String filePath =  MyApp.Companion.instance().getCacheDir()+ fileName + ".jpg";
-            File file = new File(filePath);
-            file.getParentFile().mkdirs();
+            // 保存到固定目录，文件名带时间戳，便于一次测试保留完整中间过程。
+            File debugDir = getDebugImageDir();
+            String actualFileName = System.currentTimeMillis() + "_" + fileName + ".jpg";
+            File file = new File(debugDir, actualFileName);
+            File parent = file.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
             
             FileOutputStream out = new FileOutputStream(file);
             bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out);
             out.flush();
             out.close();
             
-            Log.d(TAG, "保存调试图像: " + filePath);
+            LogUtils.INSTANCE.i("【视觉调试】保存调试图像：name=" + actualFileName + "，path=" + file.getAbsolutePath());
             
             // 释放资源
             if (matToSave != mat) {
@@ -87,8 +151,16 @@ public class SauceDetector {
             }
             bitmap.recycle();
         } catch (Exception e) {
-            Log.e(TAG, "保存调试图像失败: " + e.getMessage());
+            LogUtils.INSTANCE.e("【视觉调试】保存调试图像失败：" + e.getMessage(), e);
         }
+    }
+
+    public static String getDebugImageDirPath() {
+        return getDebugImageDir().getAbsolutePath();
+    }
+
+    private static File getDebugImageDir() {
+        return new File(MyApp.Companion.instance().getCacheDir(), DEBUG_IMAGE_DIR_NAME);
     }
 
     /**
@@ -157,12 +229,33 @@ public class SauceDetector {
     }
 
     public static DetectionResult detectSausageCentroid(Mat frame, Scalar lower, Scalar upper, String imgTag) {
+        return detectSausageCentroid(frame, lower, upper, imgTag, DEFAULT_TUNING);
+    }
+
+    public static DetectionResult detectSausageCentroid(
+            Mat frame,
+            Scalar lower,
+            Scalar upper,
+            String imgTag,
+            DetectionTuning tuning
+    ) {
         // 使用传入的字符串标识符，如果为空则使用默认值
         String debugTag = (imgTag != null && !imgTag.isEmpty()) ? imgTag : "sauce_detect";
+        DetectionTuning effectiveTuning = tuning != null ? tuning : DEFAULT_TUNING;
         
         // 添加调试日志
         Log.d(TAG, "开始检测烤肠，输入图像尺寸: " + frame.width() + "x" + frame.height() + ", 通道数: " + frame.channels());
         Log.d(TAG, "HSV阈值范围: 低阈值=" + lower.toString() + ", 高阈值=" + upper.toString());
+        Log.d(
+                TAG,
+                "检测调参: label=" + effectiveTuning.label +
+                        ", kernelSize=" + effectiveTuning.kernelSize +
+                        ", openIterations=" + effectiveTuning.openIterations +
+                        ", closeIterations=" + effectiveTuning.closeIterations +
+                        ", areaRange=[" + effectiveTuning.minArea + "," + effectiveTuning.maxArea + "]" +
+                        ", aspectRatioRange=[" + effectiveTuning.minAspectRatio + "," + effectiveTuning.maxAspectRatio + "]" +
+                        ", minCenterX=" + effectiveTuning.minCenterX
+        );
         
         // 保存输入图像
         saveDebugImage(frame, debugTag + "_1_input");
@@ -191,22 +284,26 @@ public class SauceDetector {
         saveDebugImage(mask, debugTag + "_5_binary_mask");
         
         // 形态学处理 - 确保与Python代码完全一致
-        int kernelSize = 4; // 与Python代码保持一致
+        int kernelSize = effectiveTuning.kernelSize;
         Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(kernelSize, kernelSize));
         Log.d(TAG, "形态学处理核大小: " + kernelSize);
         
         // 通过开运算和闭运算去除噪点、分离粘连 - 与Python代码保持一致
         // 开运算4次
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < effectiveTuning.openIterations; i++) {
             Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel);
         }
         saveDebugImage(mask, debugTag + "_6_after_opening");
         
         // 闭运算2次
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < effectiveTuning.closeIterations; i++) {
             Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel);
         }
-        Log.d(TAG, "形态学处理完成（开运算4次，闭运算2次）");
+        Log.d(
+                TAG,
+                "形态学处理完成（开运算" + effectiveTuning.openIterations +
+                        "次，闭运算" + effectiveTuning.closeIterations + "次）"
+        );
         saveDebugImage(mask, debugTag + "_7_after_closing");
         
         // 寻找轮廓
@@ -244,15 +341,17 @@ public class SauceDetector {
             // 记录所有轮廓的信息用于调试
             Log.d(TAG, "轮廓信息: 面积=" + area + ", 长宽比=" + aspectRatio + ", 位置=" + rect.x + "," + rect.y + "," + rect.width + "," + rect.height);
             
-            if (400 < area && area < 7000 && (0.25 < aspectRatio && aspectRatio < 2)) {
+            if (effectiveTuning.minArea < area &&
+                    area < effectiveTuning.maxArea &&
+                    effectiveTuning.minAspectRatio < aspectRatio &&
+                    aspectRatio < effectiveTuning.maxAspectRatio) {
                 // 根据一阶矩和二阶矩计算中心点
                 Moments M = Imgproc.moments(cnt);
                 // 完全按照Python代码的方式计算质心
                 int cx = (int) (M.get_m10() / M.get_m00()) - kernelSize;
                 int cy = (int) (M.get_m01() / M.get_m00()) - kernelSize / 2;
                 
-                // 确保cx > 65，与Python代码保持一致
-                if (cx > 65) {
+                if (cx > effectiveTuning.minCenterX) {
                     sausages.add(new Point(cx, cy));
                     
                     // 在结果图像上绘制轮廓和质心
@@ -262,7 +361,17 @@ public class SauceDetector {
                     // 添加详细调试日志
                     Log.d(TAG, "检测到烤肠: cx=" + cx + ", cy=" + cy + ", 面积=" + area + ", 长宽比=" + aspectRatio);
                     Log.d(TAG, "原始质心: x=" + (M.get_m10() / M.get_m00()) + ", y=" + (M.get_m01() / M.get_m00()));
+                } else {
+                    Log.d(TAG, "轮廓因质心X过小被过滤: cx=" + cx + ", minCenterX=" + effectiveTuning.minCenterX);
                 }
+            } else {
+                Log.d(
+                        TAG,
+                        "轮廓未通过筛选: area=" + area +
+                                ", aspectRatio=" + aspectRatio +
+                                ", requiredArea=[" + effectiveTuning.minArea + "," + effectiveTuning.maxArea + "]" +
+                                ", requiredAspectRatio=[" + effectiveTuning.minAspectRatio + "," + effectiveTuning.maxAspectRatio + "]"
+                );
             }
         }
         

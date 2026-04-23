@@ -324,8 +324,8 @@ public class SauceDetectionProcessor {
         Calib3d.Rodrigues(rvec, rMat);
 
         // 用于二值化的阈值 - 与Python代码保持一致
-        Scalar lower = new Scalar(0, 0, 50);
-        Scalar upper = new Scalar(15, 255, 255); // 将H通道上限从20改为15，与Python代码保持一致
+        Scalar lower = new Scalar(0, 5, 20);
+        Scalar upper = new Scalar(20, 255, 255);
 
         // 应用ROI掩码 - 与Python代码保持一致的动态计算方式
         updateRoiMasks();
@@ -360,7 +360,13 @@ public class SauceDetectionProcessor {
         }
         
         // 检测烤肠
-        SauceDetector.DetectionResult result = SauceDetector.detectSausageCentroid(workPlace, lower, upper, "sales_platform");
+        SauceDetector.DetectionResult result = SauceDetector.detectSausageCentroid(
+                workPlace,
+                lower,
+                upper,
+                "sales_platform",
+                SauceDetector.SALES_PLATFORM_TUNING
+        );
 
         // 处理检测结果
         DetectionResult detectionResult = new DetectionResult();

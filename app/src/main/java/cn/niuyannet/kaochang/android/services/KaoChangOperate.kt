@@ -47,6 +47,7 @@ object KaoChangOperate {
     private const val DEFAULT_POST_SELL_SUPPLEMENT_GUARD_SECONDS = 5
     private const val DEFAULT_POST_SELL_IDLE_STABLE_SECONDS = 2
     private const val DEFAULT_POST_SELL_IDLE_MAX_WAIT_SECONDS = 12
+    private const val DEFAULT_POST_SELL_SUPPLEMENT_RETRY_DELAY_SECONDS = 10
     private const val MANUAL_TAKE_IDLE_TIMEOUT_MS = 15_000L
     private const val SELL_PLATFORM_RETRY_DELAY_MS = 300L
     private const val SELL_PLATFORM_CAPTURE_TIMEOUT_MS = 2500L
@@ -118,7 +119,8 @@ object KaoChangOperate {
     private fun actionExecutionResultDesc(result: ActionExecutionResult): String = when (result) {
         ActionExecutionResult.SUCCESS -> "SUCCESS(成功)"
         ActionExecutionResult.COMMAND_REJECTED -> "COMMAND_REJECTED(指令被拒绝)"
-        ActionExecutionResult.BUSY_TIMEOUT -> "BUSY_TIMEOUT(设备忙超时)"
+        ActionExecutionResult.PRECHECK_BUSY_TIMEOUT -> "PRECHECK_BUSY_TIMEOUT(动作启动前设备忙超时)"
+        ActionExecutionResult.POST_ISSUE_BUSY_TIMEOUT -> "POST_ISSUE_BUSY_TIMEOUT(动作下发后设备忙超时)"
         ActionExecutionResult.DISCONNECTED -> "DISCONNECTED(通信断开)"
         ActionExecutionResult.RUNNING_TIMEOUT -> "RUNNING_TIMEOUT(执行超时)"
     }
@@ -189,9 +191,16 @@ object KaoChangOperate {
     private enum class ActionExecutionResult {
         SUCCESS,
         COMMAND_REJECTED,
-        BUSY_TIMEOUT,
+        PRECHECK_BUSY_TIMEOUT,
+        POST_ISSUE_BUSY_TIMEOUT,
         DISCONNECTED,
         RUNNING_TIMEOUT
+    }
+
+    private enum class PostSellSupplementGuardResult {
+        READY,
+        TIMED_OUT_BUSY,
+        DISCONNECTED
     }
 
     private fun publishRuntimeStateWithHttpFallback(reason: String) {
@@ -223,10 +232,10 @@ object KaoChangOperate {
         logD(LOG_WINDOW, "$reason，进入售卖收尾保护窗：${durationMs}ms")
     }
 
-    private suspend fun waitForPostSellSupplementGuardIfNeeded() {
+    private suspend fun waitForPostSellSupplementGuardIfNeeded(): PostSellSupplementGuardResult {
         val blockUntil = supplementBlockedUntilMs
         if (blockUntil <= 0L) {
-            return
+            return PostSellSupplementGuardResult.READY
         }
 
         val remaining = blockUntil - System.currentTimeMillis()
@@ -238,37 +247,45 @@ object KaoChangOperate {
         supplementBlockedUntilMs = 0L
 
         if (!VMModbusHelper.connectStatus()) {
-            logW(LOG_SUPPLEMENT, "售卖收尾保护结束时检测到下位机未连接，跳过空闲稳定检查")
-            return
+            logW(LOG_SUPPLEMENT, "售卖收尾保护结束时检测到下位机未连接：结果=DISCONNECTED，后续补肠维持严格故障策略")
+            return PostSellSupplementGuardResult.DISCONNECTED
         }
 
         var idleSince = -1L
         val idleStableMs = getPostSellIdleStableMs()
         val checkDeadline = System.currentTimeMillis() + getPostSellIdleMaxWaitMs()
+        var lastObservedState: ActionExecution201State? = null
         while (System.currentTimeMillis() < checkDeadline) {
-            when (parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))) {
+            val currentState = parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))
+            when (currentState) {
                 ActionExecution201State.IDLE -> {
+                    lastObservedState = ActionExecution201State.IDLE
                     val now = System.currentTimeMillis()
                     if (idleSince < 0L) {
                         idleSince = now
                     }
                     if (now - idleSince >= idleStableMs) {
-                        logD(LOG_SUPPLEMENT, "售卖收尾后下位机已连续空闲 ${now - idleSince}ms，允许补肠")
-                        return
+                        logD(LOG_SUPPLEMENT, "售卖收尾后下位机已连续空闲 ${now - idleSince}ms：结果=READY，允许继续补肠")
+                        return PostSellSupplementGuardResult.READY
                     }
                 }
                 ActionExecution201State.RUNNING, ActionExecution201State.BUSY -> {
+                    lastObservedState = currentState
                     idleSince = -1L
                 }
                 ActionExecution201State.DISCONNECTED -> {
-                    logW(LOG_SUPPLEMENT, "售卖收尾后读取 201 失败，跳过空闲稳定检查")
-                    return
+                    logW(LOG_SUPPLEMENT, "售卖收尾后读取201失败：结果=DISCONNECTED，后续补肠维持严格故障策略")
+                    return PostSellSupplementGuardResult.DISCONNECTED
                 }
             }
             delay(500L)
         }
 
-        logW(LOG_SUPPLEMENT, "售卖收尾后等待下位机稳定空闲超时，继续按常规补肠流程处理")
+        logW(
+            LOG_SUPPLEMENT,
+            "售卖收尾后等待下位机稳定空闲超时：结果=TIMED_OUT_BUSY，last201=${actionStatus201Desc(lastObservedState)}，本轮自动补肠应延期"
+        )
+        return PostSellSupplementGuardResult.TIMED_OUT_BUSY
     }
 
     private suspend fun captureSellPlatform(tag: String = "KaoChangAlgorithm") =
@@ -505,6 +522,28 @@ object KaoChangOperate {
         return seconds * 1000L
     }
 
+    private fun getPostSellSupplementRetryDelayMs(): Long {
+        return DEFAULT_POST_SELL_SUPPLEMENT_RETRY_DELAY_SECONDS * 1000L
+    }
+
+    private fun deferPostSellAutoSupplement(
+        targetPanPosition: Int,
+        sourceBoxPosition: Int,
+        reason: String,
+        status201: ActionExecution201State? = null
+    ) {
+        val retryDelayMs = getPostSellSupplementRetryDelayMs()
+        logW(
+            LOG_SUPPLEMENT,
+            "售卖收尾后的自动补肠延期：targetPan=$targetPanPosition，sourceBox=$sourceBoxPosition，" +
+                "reason=$reason，current201=${actionStatus201Desc(status201)}，retryDelayMs=$retryDelayMs，本轮跳过补肠且不进入维护"
+        )
+        armPostSellSupplementGuard(
+            reason = "售卖收尾后的自动补肠延期重试",
+            durationMs = retryDelayMs
+        )
+    }
+
     private fun getCameraPrewarmHoldMs(): Long {
         val seconds = AppConfig.getAppConfig().cameraPrewarmHoldSeconds
             .takeIf { it > 0 }
@@ -581,6 +620,13 @@ object KaoChangOperate {
         ActionExecution201State.DISCONNECTED -> "READ_FAIL(读取失败/通信断开)"
     }
 
+    private fun readCurrentActionStatus201ForLog(): ActionExecution201State? {
+        if (!VMModbusHelper.connectStatus()) {
+            return ActionExecution201State.DISCONNECTED
+        }
+        return parseActionStatus201(VMModbusHelper.readHoldingRegisters(modbus_address, action_address_status))
+    }
+
     /**
      * 在真正下发动作前做一次通信层预检。
      * 这里只解决“上下位机通不通”的问题，不负责判断设备忙闲。
@@ -637,7 +683,7 @@ object KaoChangOperate {
                     busyRetryCount++
                     if (busyRetryCount > maxBusyRetry) {
                         logE(LOG_ACTION, "$actionName 前连续检测到设备忙，超过重试阈值：retry=$busyRetryCount")
-                        return ActionExecutionResult.BUSY_TIMEOUT
+                        return ActionExecutionResult.PRECHECK_BUSY_TIMEOUT
                     }
                     logW(LOG_ACTION, "$actionName 前检测到设备忙(201!=0)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                     delay(busyRetryDelayMs)
@@ -656,7 +702,7 @@ object KaoChangOperate {
                     busyRetryCount++
                     if (busyRetryCount > maxBusyRetry) {
                         logE(LOG_ACTION, "$actionName 下发指令时下位机持续返回忙，超过重试阈值")
-                        return ActionExecutionResult.BUSY_TIMEOUT
+                        return ActionExecutionResult.PRECHECK_BUSY_TIMEOUT
                     }
                     logW(LOG_ACTION, "$actionName 下发指令时下位机返回忙，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                     delay(busyRetryDelayMs)
@@ -715,7 +761,7 @@ object KaoChangOperate {
                         busyRetryCount++
                         if (busyRetryCount > maxBusyRetry) {
                             logE(LOG_ACTION, "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值")
-                            return ActionExecutionResult.BUSY_TIMEOUT
+                            return ActionExecutionResult.POST_ISSUE_BUSY_TIMEOUT
                         }
                         logW(LOG_ACTION, "$actionName 下发后收到设备忙(201=2)，等待后重试：attempt=$busyRetryCount/$maxBusyRetry")
                         delay(busyRetryDelayMs)
@@ -729,14 +775,15 @@ object KaoChangOperate {
             }
         }
 
-        return ActionExecutionResult.BUSY_TIMEOUT
+        return ActionExecutionResult.PRECHECK_BUSY_TIMEOUT
     }
 
     private fun markActionFailure(actionName: String, result: ActionExecutionResult) {
         val logMessage = when (result) {
             ActionExecutionResult.SUCCESS -> return
             ActionExecutionResult.COMMAND_REJECTED -> "$actionName 下发指令失败，设备进入维护中"
-            ActionExecutionResult.BUSY_TIMEOUT -> "$actionName 连续收到设备忙(201=2)，超过重试阈值，设备进入维护中"
+            ActionExecutionResult.PRECHECK_BUSY_TIMEOUT -> "$actionName 在启动前持续检测到设备忙(201!=0)，超过重试阈值，设备进入维护中"
+            ActionExecutionResult.POST_ISSUE_BUSY_TIMEOUT -> "$actionName 下发后连续收到设备忙(201=2)，超过重试阈值，设备进入维护中"
             ActionExecutionResult.DISCONNECTED -> "$actionName 过程中与下位机通信断开，设备进入维护中"
             ActionExecutionResult.RUNNING_TIMEOUT -> "$actionName 长时间处于执行中(201=1)，设备进入维护中"
         }
@@ -761,7 +808,8 @@ object KaoChangOperate {
         val status201 = when (result) {
             ActionExecutionResult.SUCCESS -> 0
             ActionExecutionResult.RUNNING_TIMEOUT -> 1
-            ActionExecutionResult.BUSY_TIMEOUT -> 2
+            ActionExecutionResult.PRECHECK_BUSY_TIMEOUT,
+            ActionExecutionResult.POST_ISSUE_BUSY_TIMEOUT -> 2
             ActionExecutionResult.COMMAND_REJECTED,
             ActionExecutionResult.DISCONNECTED -> -1
         }
@@ -989,7 +1037,28 @@ object KaoChangOperate {
             appState = AppConfig.getAppConfig().moveStatus
             logD(LOG_SUPPLEMENT, "补肠前等待其他机械动作结束：moveStatus=${moveStatusDesc(appState)}")
         }
-        waitForPostSellSupplementGuardIfNeeded()
+        val hadPostSellGuard = supplementBlockedUntilMs > 0L
+        val postSellGuardResult = waitForPostSellSupplementGuardIfNeeded()
+        if (hadPostSellGuard) {
+            when (postSellGuardResult) {
+                PostSellSupplementGuardResult.READY -> Unit
+                PostSellSupplementGuardResult.TIMED_OUT_BUSY -> {
+                    deferPostSellAutoSupplement(
+                        targetPanPosition = kaoPan.positionSn,
+                        sourceBoxPosition = kaoPanBox.positionSn,
+                        reason = "售卖收尾后等待下位机稳定空闲超时",
+                        status201 = readCurrentActionStatus201ForLog()
+                    )
+                    return false
+                }
+                PostSellSupplementGuardResult.DISCONNECTED -> {
+                    logW(
+                        LOG_SUPPLEMENT,
+                        "售卖收尾后的自动补肠继续按严格故障策略执行：targetPan=${kaoPan.positionSn}，sourceBox=${kaoPanBox.positionSn}，reason=保护窗结束时通信不可用"
+                    )
+                }
+            }
+        }
         AppConfig.getAppConfig().moveStatus = 1
         AppConfig.saveAppConfig(AppConfig.getAppConfig())
 
@@ -1011,6 +1080,15 @@ object KaoChangOperate {
         if (result != ActionExecutionResult.SUCCESS) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
+            if (hadPostSellGuard && result == ActionExecutionResult.PRECHECK_BUSY_TIMEOUT) {
+                deferPostSellAutoSupplement(
+                    targetPanPosition = kaoPan.positionSn,
+                    sourceBoxPosition = kaoPanBox.positionSn,
+                    reason = "烤肠箱到平台在动作启动前持续检测到设备忙",
+                    status201 = readCurrentActionStatus201ForLog()
+                )
+                return false
+            }
             markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
             return false
         }
@@ -1080,7 +1158,14 @@ object KaoChangOperate {
         operateScope.launch {
             KaoPanHelper.saveKaoPanBoxList(KaoPanHelper.getKaoPanBoxList())
             KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
-        logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
+            logD(LOG_SUPPLEMENT, "补肠后烤盘状态更新完成")
+            if (moveSuccess) {
+                logD(
+                    LOG_SUPPLEMENT,
+                    "补肠成功后立即触发云端同步：targetPan=${kaoPan.positionSn}，sourceBox=${kaoPanBox.positionSn}，避免管理后台烤盘状态滞后"
+                )
+                DataManagementAPI.uploadDataToServer()
+            }
         }
         logD(LOG_SUPPLEMENT, "补肠流程结束：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，success=$moveSuccess")
 

@@ -146,9 +146,11 @@ object VMMqttHelper : VMMqtt() {
         val isEnable = if (content.containsKey("isEnable")) content.getString("isEnable") else ""
         val modeType = if (content.containsKey("modeType")) content.getString("modeType") else ""
         val transitionMode = if (content.containsKey("transitionMode")) content.getString("transitionMode") else ""
+        val refreshRemoteConfig =
+            if (content.containsKey("refreshRemoteConfig")) content.getString("refreshRemoteConfig") else ""
         return when (messageType) {
             MqttProtocol.TYPE_RUNTIME_CONTROL ->
-                "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable"
+                "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable, refreshRemoteConfig=$refreshRemoteConfig"
             MqttProtocol.TYPE_CONCURRENCY_CONTROL ->
                 "收到并发控制：action=2（设备状态同步），controlSeq=$controlSeq, modeType=$modeType, transitionMode=$transitionMode"
             MqttProtocol.TYPE_RUNTIME_CONTROL_ACK ->

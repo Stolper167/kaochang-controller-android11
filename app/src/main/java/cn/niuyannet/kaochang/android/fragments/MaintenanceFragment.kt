@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Button
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
@@ -54,6 +55,8 @@ class MaintenanceFragment : Fragment() {
     private var algorithmCooldownJob: Job? = null
     private var clearPanCooldownJob: Job? = null
     private var resetPanCooldownJob: Job? = null
+    private var applyConfigNowJob: Job? = null
+    private var btnApplyConfigNow: Button? = null
     private var algorithmSwitchFallbackTickCount = 0
     private val maintenanceUiRefreshCallback: (String) -> Unit = { reason ->
         activity?.runOnUiThread {
@@ -75,6 +78,8 @@ class MaintenanceFragment : Fragment() {
         private const val MAINTENANCE_ACTION_COOLDOWN_SECONDS = 15
         private const val ALGORITHM_SWITCH_FALLBACK_SYNC_INTERVAL_SECONDS = 5
         private const val MANUAL_ACTION_IDLE_TIMEOUT_MS = 15_000L
+        private const val ONE_MINUTE_MS = 60_000L
+        private const val BAKING_TIME_IMMEDIATE_APPLY_PROGRESS_THRESHOLD = 0.8
     }
 
     private fun onlineStatusText(value: Int): String = when (value) {
@@ -181,8 +186,186 @@ class MaintenanceFragment : Fragment() {
         MaintenanceUiRefreshBridge.register(maintenanceUiRefreshCallback)
         setupGrid()
         setupButtons()
+        installApplyConfigNowButton()
         syncAlgorithmSwitchFromRuntimeState("维护页初始化", forceLog = true)
         syncInspectionSwitchFromRuntimeState("维护页初始化", forceLog = true)
+    }
+
+    private fun installApplyConfigNowButton() {
+        if (btnApplyConfigNow != null) {
+            return
+        }
+        val parent = binding.btnUpdate.parent as? ViewGroup ?: return
+        val context = context ?: return
+        val sourceParams = binding.btnUpdate.layoutParams
+        val button = Button(context).apply {
+            text = "立即应用到当前设备"
+            isAllCaps = false
+            layoutParams = when (sourceParams) {
+                is ViewGroup.MarginLayoutParams -> ViewGroup.MarginLayoutParams(sourceParams)
+                null -> ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+                else -> ViewGroup.LayoutParams(sourceParams)
+            }
+            setOnClickListener {
+                showApplyConfigNowDialog()
+            }
+        }
+        val insertIndex = parent.indexOfChild(binding.btnUpdate)
+        parent.addView(button, (insertIndex + 1).coerceAtMost(parent.childCount))
+        btnApplyConfigNow = button
+    }
+
+    private fun showApplyConfigNowDialog() {
+        if (applyConfigNowJob?.isActive == true) {
+            ToastUtils.showShort("正在应用当前配置，请稍后")
+            return
+        }
+        val config = AppConfig.getAppConfig()
+        val message = buildString {
+            append("此操作只影响本机当前设备，不改变肠乐后台默认下发逻辑。\n\n")
+            append("将尝试立即应用以下本地配置：\n")
+            append("烤制时间=").append(config.bakingTime).append(" 分钟\n")
+            append("烤制温度=").append(config.heatingTemperature).append("℃\n")
+            append("保温温度=").append(config.keepWarmTemperature).append("℃\n")
+            append("丢弃时间=").append(config.discardTime).append(" 分钟\n\n")
+            append("说明：\n")
+            append("1. 当前正在加热/保温的区会立即重写目标温度。\n")
+            append("2. 当前已在保温的烤肠会立即更新丢弃时间。\n")
+            append("3. 当前正在烤制的烤肠只在未接近熟成时追配烤制时间，避免半熟提前开放。")
+        }
+        AlertDialog.Builder(requireContext())
+            .setTitle("确认立即应用本地配置")
+            .setMessage(message)
+            .setPositiveButton("立即应用") { _, _ ->
+                applyConfigNowJob = lifecycleScope.launch {
+                    performImmediateConfigApply()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private suspend fun performImmediateConfigApply() {
+        val button = btnApplyConfigNow
+        button?.isEnabled = false
+        binding.tvCooldownHint.text = "正在将本地配置应用到当前设备"
+        try {
+            val config = AppConfig.getAppConfig()
+            if (config.inspectionMode == 1) {
+                ToastUtils.showShort("检修模式下不允许立即应用当前配置")
+                LogUtils.w(
+                    "【维护操作】拒绝立即应用本地配置：inspectionMode（检修模式）=${inspectionModeText(config.inspectionMode)}"
+                )
+                return
+            }
+            if (config.errorStatus != 0) {
+                ToastUtils.showShort("设备当前存在故障，请先恢复正常状态")
+                LogUtils.w(
+                    "【维护操作】拒绝立即应用本地配置：errorStatus=${config.errorStatus}，onlineStatus=${onlineStatusText(config.onlineStatus)}"
+                )
+                return
+            }
+
+            val idleReady = waitUntilMachineIdleOrTimeout(
+                reason = "维护页立即应用本地配置等待空闲",
+                waitingText = "等待机械动作完成后再应用配置",
+                update = { binding.tvCooldownHint.text = it }
+            )
+            if (!idleReady) {
+                ToastUtils.showShort("设备当前机械状态未归零，请稍后再试")
+                LogUtils.w("【维护操作】立即应用本地配置失败：等待机械空闲超时")
+                return
+            }
+
+            val now = System.currentTimeMillis()
+            val newBakingDurationMs = config.bakingTime.coerceAtLeast(0) * ONE_MINUTE_MS
+            val newDiscardDurationMs = config.discardTime.coerceAtLeast(0) * ONE_MINUTE_MS
+            val pans = KaoPanHelper.getKaoPanList()
+
+            var heatingPanCount = 0
+            var holdingPanCount = 0
+            var updatedDiscardCount = 0
+            var updatedBakingCount = 0
+            var skippedBakingCount = 0
+
+            pans.filter { it.isHasSausage }.forEach { pan ->
+                val isHeating = pan.startTime > 0L && pan.holdingTime <= 0L
+                val isHolding = pan.holdingTime > 0L || pan.status == 2
+
+                pan.closeTime = newDiscardDurationMs
+                updatedDiscardCount += 1
+
+                if (isHeating) {
+                    heatingPanCount += 1
+                    pan.temperature = config.heatingTemperature
+                    val oldBakingTime = pan.bakingTime
+                    val heatedMs = (now - pan.startTime).coerceAtLeast(0L)
+                    val progress =
+                        if (oldBakingTime > 0L) heatedMs.toDouble() / oldBakingTime.toDouble() else 0.0
+                    if (progress < BAKING_TIME_IMMEDIATE_APPLY_PROGRESS_THRESHOLD) {
+                        pan.bakingTime = newBakingDurationMs
+                        updatedBakingCount += 1
+                    } else {
+                        skippedBakingCount += 1
+                    }
+                } else if (isHolding) {
+                    holdingPanCount += 1
+                    pan.temperature = config.keepWarmTemperature
+                }
+            }
+
+            applyAreaTemperatureImmediately(1, pans.filter { it.positionSn in 1..9 && it.isHasSausage })
+            applyAreaTemperatureImmediately(2, pans.filter { it.positionSn in 10..21 && it.isHasSausage })
+            applyAreaTemperatureImmediately(3, pans.filter { it.positionSn in 25..33 && it.isHasSausage })
+
+            withContext(Dispatchers.IO) {
+                KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
+            }
+
+            val runtimePublishOk = SendServerHelper.publishServiceUpdateStatus()
+            if (!runtimePublishOk) {
+                DataManagementAPI.uploadDeviceInfo()
+            }
+
+            val summary =
+                "立即应用完成：加热中=$heatingPanCount，保温中=$holdingPanCount，" +
+                    "丢弃时间已更新=$updatedDiscardCount，烤制时长已追配=$updatedBakingCount，" +
+                    "烤制时长因接近熟成而跳过=$skippedBakingCount"
+            binding.tvCooldownHint.text = summary
+            ToastUtils.showShort("本地配置已应用到当前设备")
+            LogUtils.i(
+                "【维护操作】$summary，" +
+                    "heatingTemperature（烤制温度）=${config.heatingTemperature}，" +
+                    "keepWarmTemperature（保温温度）=${config.keepWarmTemperature}，" +
+                    "bakingTime（烤制时间）=${config.bakingTime}分钟，" +
+                    "discardTime（丢弃时间）=${config.discardTime}分钟，" +
+                    "source=maintenance_manual_apply"
+            )
+        } finally {
+            button?.isEnabled = true
+            applyConfigNowJob = null
+        }
+    }
+
+    private fun applyAreaTemperatureImmediately(area: Int, pans: List<KaoPan>) {
+        if (pans.isEmpty()) {
+            return
+        }
+        val hasHeating = pans.any { it.startTime > 0L && it.holdingTime <= 0L }
+        val hasHolding = pans.any { it.holdingTime > 0L || it.status == 2 }
+        when {
+            hasHeating -> {
+                KaoChangOperate.heating(area)
+                LogUtils.i("【维护操作】立即应用本地配置：已重写${area}区烤制温度")
+            }
+            hasHolding -> {
+                KaoChangOperate.keepWarm(area)
+                LogUtils.i("【维护操作】立即应用本地配置：已重写${area}区保温温度")
+            }
+        }
     }
 
     private fun clearRuntimeStateAfterManualPanReset(reason: String) {

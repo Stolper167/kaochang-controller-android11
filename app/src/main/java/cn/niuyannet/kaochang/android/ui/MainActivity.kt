@@ -237,6 +237,63 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
     }
 
     private fun handleRuntimeControlMessage(content: String) {
+        val json = try {
+            JSON.parseObject(content)
+        } catch (e: Exception) {
+            LogUtils.e("【MQTT运行时控制】消息解析失败：error=${e.message}, raw=$content")
+            return
+        }
+        val targetOnlineStatus =
+            if (json.containsKey("onlineStatus")) json.getIntValue("onlineStatus") else null
+        val refreshRemoteConfig = json.getBooleanValue("refreshRemoteConfig")
+        val shouldPreRefresh =
+            refreshRemoteConfig || targetOnlineStatus == 1 || targetOnlineStatus == 2
+        if (shouldPreRefresh) {
+            val refreshReason = buildString {
+                if (refreshRemoteConfig) {
+                    append("后台显式要求刷新配置")
+                }
+                if (targetOnlineStatus == 1 || targetOnlineStatus == 2) {
+                    if (isNotEmpty()) {
+                        append("，")
+                    }
+                    append("收到后台切换营业状态=$targetOnlineStatus")
+                }
+            }
+            LogUtils.d(
+                "【MQTT运行时控制】应用前先刷新远端配置：" +
+                    "controlSeq=${json.getLongValue("controlSeq")}，reason=$refreshReason"
+            )
+            DataManagementAPI.refreshRemoteDeviceState(
+                logPrefix = "运行时控制预刷新"
+            ) { refreshResult ->
+                LogUtils.d(
+                    "【MQTT运行时控制】预刷新完成：" +
+                        "success=${refreshResult.success}，changed=${refreshResult.changed}，" +
+                        "onlineStatus（设备营业状态）=${refreshResult.onlineStatus}，" +
+                        "scanBlockStatus（前台屏蔽状态）=${refreshResult.scanBlockStatus}，" +
+                        "isEnable（烤肠算法开关）=${refreshResult.isEnable}"
+                )
+                applyRuntimeControlMessageAfterRefresh(
+                    content = content,
+                    preRefreshChanged = refreshResult.success && refreshResult.changed,
+                    preRefreshAttempted = true
+                )
+            }
+            return
+        }
+        applyRuntimeControlMessageAfterRefresh(
+            content = content,
+            preRefreshChanged = false,
+            preRefreshAttempted = false
+        )
+    }
+
+    private fun applyRuntimeControlMessageAfterRefresh(
+        content: String,
+        preRefreshChanged: Boolean,
+        preRefreshAttempted: Boolean
+    ) {
         val result = DataManagementAPI.applyRemoteRuntimeControl(
             content = content,
             source = MqttProtocol.SOURCE_MQTT_ACTION_2
@@ -270,6 +327,7 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.d(
             "【MQTT运行时控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
+                "preRefreshAttempted=$preRefreshAttempted，preRefreshChanged=$preRefreshChanged，" +
                 "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
                 "supplyStatus（补货状态）=${result.supplyStatus}，" +
                 "scanBlockStatus（前台屏蔽状态）=${result.scanBlockStatus}，" +
@@ -277,11 +335,11 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 "isEnable（烤肠算法开关）=${result.isEnable}，" +
                 "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(result.restStatusSource)}"
         )
-        if (result.applied && result.changed) {
+        if (preRefreshChanged || (result.applied && result.changed)) {
             SendServerHelper.publishServiceUpdateStatus()
-            setDataToView()
+            runOnUiThread { setDataToView() }
         }
-        if (result.applied) {
+        if (result.applied || preRefreshChanged) {
             MaintenanceUiRefreshBridge.requestRefresh(
                 "runtime_control:${result.reason}:seq=${result.controlSeq}"
             )

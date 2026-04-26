@@ -36,9 +36,18 @@ import kotlinx.coroutines.withContext
  */
 abstract class OrderActivity: BaseSauceDetection() {
 
+    private companion object {
+        const val ORDER_EVENT_STATUS_PICKING = 1
+        const val ORDER_EVENT_STATUS_TAKEN = 2
+        const val ORDER_EVENT_STATUS_DISCARDED_BY_TIMEOUT = 3
+        const val ORDER_EVENT_STATUS_FAILED = 5
+    }
+
     private data class DeliveryResult(
         val success: Boolean,
-        val deliveredCount: Int
+        val completedCount: Int,
+        val takenCount: Int,
+        val discardedCount: Int
     )
 
     private var processingDialog: MaterialDialog? = null
@@ -46,9 +55,10 @@ abstract class OrderActivity: BaseSauceDetection() {
     private var countDownTimer: CountDownTimer? = null
 
     private fun orderEventStatusText(status: Int): String = when (status) {
-        1 -> "1（开始夹取）"
-        2 -> "2（单次履约完成：顾客已取走或超时丢弃）"
-        5 -> "5（单次履约失败）"
+        ORDER_EVENT_STATUS_PICKING -> "1（开始夹取）"
+        ORDER_EVENT_STATUS_TAKEN -> "2（单次履约完成：顾客已取走）"
+        ORDER_EVENT_STATUS_DISCARDED_BY_TIMEOUT -> "3（已出餐但顾客未取，系统已丢弃）"
+        ORDER_EVENT_STATUS_FAILED -> "5（单次履约失败）"
         else -> "${status}（未知）"
     }
 
@@ -222,22 +232,31 @@ abstract class OrderActivity: BaseSauceDetection() {
                 LogUtils.d(
                     "【订单流转】收到新的顾客下单请求：orderNo=$orderNo, itemCount=${goodsList.size}, totalQuantity=$totalCount, items=[$orderSummary]"
                 )
-                var deliveredTotal = 0
+                var completedTotal = 0
+                var takenTotal = 0
+                var discardedTotal = 0
                 var orderCompleted = true
                 for (item in goodsList) {
                     val result = handleOrderItemDelivery(
                         orderNo = orderNo,
                         item = item,
                         totalCount = totalCount,
-                        deliveredBase = deliveredTotal
+                        completedBase = completedTotal
                     )
-                    deliveredTotal += result.deliveredCount
+                    completedTotal += result.completedCount
+                    takenTotal += result.takenCount
+                    discardedTotal += result.discardedCount
                     if (!result.success) {
                         orderCompleted = false
                         break
                     }
                 }
-                orderCompleted = orderCompleted && deliveredTotal == totalCount
+                orderCompleted = orderCompleted && completedTotal == totalCount
+                LogUtils.d(
+                    "【订单流转】整单处理结束：" +
+                        "orderNo=$orderNo，completedTotal=$completedTotal/$totalCount，" +
+                        "takenTotal=$takenTotal，discardedTotal=$discardedTotal，orderCompleted=$orderCompleted"
+                )
                 cn.niuyannet.kaochang.android.services.SelfCleanManager.finishOrderTracking(orderNo, orderCompleted)
                 if (orderCompleted) { cn.niuyannet.kaochang.android.utils.OrderStateManager.markAsFinished(orderNo) }
 
@@ -260,6 +279,13 @@ abstract class OrderActivity: BaseSauceDetection() {
                     hideProcessingDialog()
                     if (orderCompleted) {
                         showCompletedDialog()
+                        if (discardedTotal > 0) {
+                            Toast.makeText(
+                                this@OrderActivity,
+                                "订单处理完成，其中${discardedTotal}根顾客超时未取，系统已丢弃",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     } else {
                         Toast.makeText(this@OrderActivity, "订单未完成，请联系维护人员", Toast.LENGTH_LONG).show()
                     }
@@ -277,65 +303,93 @@ abstract class OrderActivity: BaseSauceDetection() {
      * 执行单个商品项的逐根出餐。
      *
      * 注意：
-     * - TAKEN_BY_USER 和 DISCARDED 当前都会把 deliveredCount + 1
-     * - 只有 ERROR 才会中断本商品项并上报 status=5
+     * - completedCount（已完成根数）用于控制当前商品项还要不要继续出下一根；
+     * - takenCount（顾客已取走根数）只统计真正被顾客取走的数量；
+     * - DISCARDED（已丢弃）会作为“已处理完成但顾客未取”的独立状态继续推进后续数量；
+     * - DELIVERY_NOT_CONFIRMED / ERROR 才会终止当前商品项并上报失败。
      */
     private suspend fun handleOrderItemDelivery(
         orderNo: String,
         item: KcOrderItem,
         totalCount: Int,
-        deliveredBase: Int
+        completedBase: Int
     ): DeliveryResult {
-        var deliveredCount = 0
+        var completedCount = 0
+        var takenCount = 0
+        var discardedCount = 0
         var attemptCount = 0
         val maxAttempts = item.quantity * 3
 
-        while (deliveredCount < item.quantity && attemptCount < maxAttempts) {
+        while (completedCount < item.quantity && attemptCount < maxAttempts) {
             attemptCount++
             withContext(Dispatchers.Main) {
                 showProcessingDialog()
-                updateProcessingDialog(deliveredBase + deliveredCount + 1, totalCount)
+                updateProcessingDialog(completedBase + completedCount + 1, totalCount)
             }
-            val currentIndex = deliveredBase + deliveredCount + 1
+            val currentIndex = completedBase + completedCount + 1
             LogUtils.d(
                 "【订单流转】开始处理单根烤肠：orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, " +
-                    "tasteCode=${item.tasteCode}, current=$currentIndex/$totalCount, itemProgress=${deliveredCount + 1}/${item.quantity}, attempt=$attemptCount/$maxAttempts"
+                    "tasteCode=${item.tasteCode}, current=$currentIndex/$totalCount, itemProgress=${completedCount + 1}/${item.quantity}, attempt=$attemptCount/$maxAttempts"
             )
             val currentMoveStatus = AppConfig.getAppConfig().moveStatus
             if (currentMoveStatus != 2) {
                 LogUtils.w("【订单流转】终止当前出餐：设备动作状态不是取肠中（moveStatus!=2），orderNo=$orderNo, itemId=${item.id}")
-                return DeliveryResult(false, deliveredCount)
+                return DeliveryResult(
+                    success = false,
+                    completedCount = completedCount,
+                    takenCount = takenCount,
+                    discardedCount = discardedCount
+                )
             }
 
             try {
                 if (!ensureModbusReadyForDelivery(orderNo, item.id)) {
                     throw IllegalStateException("下位机通信未恢复，无法开始本次出餐：orderNo=$orderNo, itemId=${item.id}")
                 }
-                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 1)
+                reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_PICKING)
 
                 when (KaoChangAlgorithm.purchase(item.tasteCode, item.productId)) {
                     KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> {
-                        deliveredCount++
+                        completedCount++
+                        takenCount++
                         LogUtils.d(
                             "【履约完结】视觉判定顾客已取走，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
-                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
+                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount}/$totalCount"
                         )
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_TAKEN)
                     }
 
                     KaoChangOperate.TakeSausageResult.DISCARDED -> {
-                        deliveredCount++
+                        completedCount++
+                        discardedCount++
                         LogUtils.w(
-                            "【履约完结】烤肠已超时丢弃，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
-                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${deliveredBase + deliveredCount}/$totalCount"
+                            "【履约完结】烤肠已超时丢弃，已上报独立订单事件(status=3)并继续后续数量：orderNo=$orderNo, " +
+                                "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount}/$totalCount"
                         )
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 2)
-                        LogUtils.w("【订单流转】本轮出餐按丢弃计完成，继续处理剩余数量：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
-                        LogUtils.w("【履约完结】本根烤肠因超时丢弃完成，不再重试：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attempt=$attemptCount/$maxAttempts")
+                        reportOrderEvent(
+                            orderNo,
+                            item.id,
+                            item.productId,
+                            item.tasteCode,
+                            ORDER_EVENT_STATUS_DISCARDED_BY_TIMEOUT
+                        )
+                        LogUtils.w(
+                            "【订单流转】单根出餐超时被丢弃，但不视为设备履约失败：orderNo=$orderNo, itemId=${item.id}, " +
+                                "completedCount=$completedCount/${item.quantity}, discardedCount=$discardedCount, attempt=$attemptCount/$maxAttempts"
+                        )
+                    }
+
+                    KaoChangOperate.TakeSausageResult.DELIVERY_NOT_CONFIRMED -> {
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
+                        LogUtils.e(
+                            "【订单流转】售卖口未确认到货或未确认顾客取走，本次履约按失败处理并上报 Java 订单事件(status=5)：" +
+                                "orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount + 1}/$totalCount"
+                        )
+                        throw IllegalStateException("单根出餐未确认送达：orderNo=$orderNo, itemId=${item.id}")
                     }
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
-                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
+                        reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
                         LogUtils.e("【订单流转】单根出餐失败，已上报 Java 订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
                         throw IllegalStateException("单根出餐失败：orderNo=$orderNo, itemId=${item.id}")
                     }
@@ -349,18 +403,38 @@ abstract class OrderActivity: BaseSauceDetection() {
                     AppConfig.saveAppConfig(AppConfig.getAppConfig())
                     syncDeviceStatusToServer(retryDelaysMs = listOf(2000L, 6000L))
                 }
-                return DeliveryResult(false, deliveredCount)
+                return DeliveryResult(
+                    success = false,
+                    completedCount = completedCount,
+                    takenCount = takenCount,
+                    discardedCount = discardedCount
+                )
             }
         }
 
-        if (deliveredCount < item.quantity) {
-            LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            LogUtils.e("【订单流转】商品项履约失败，已上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}, deliveredCount=$deliveredCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, 5)
-            return DeliveryResult(false, deliveredCount)
+        if (completedCount < item.quantity) {
+            LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e("【订单流转】商品项履约失败，已上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
+            return DeliveryResult(
+                success = false,
+                completedCount = completedCount,
+                takenCount = takenCount,
+                discardedCount = discardedCount
+            )
         }
 
-        return DeliveryResult(true, deliveredCount)
+        LogUtils.d(
+            "【订单流转】商品项处理完成：" +
+                "orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, " +
+                "takenCount=$takenCount, discardedCount=$discardedCount"
+        )
+        return DeliveryResult(
+            success = true,
+            completedCount = completedCount,
+            takenCount = takenCount,
+            discardedCount = discardedCount
+        )
     }
 
     /**
@@ -486,4 +560,3 @@ abstract class OrderActivity: BaseSauceDetection() {
         }
     }
 }
-

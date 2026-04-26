@@ -376,11 +376,18 @@ object LowCurrentTrafficMode {
                         requireReserved = true
                     )
                     targetPan?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(
+                        val moveSuccess = KaoChangOperate.moveKaoPanToKaoPan(
                             kaoPan,
                             it,
                             targetHoldingTime = System.currentTimeMillis()
                         )
+                        if (!moveSuccess) {
+                            LogUtils.w(
+                                TAG,
+                                "【低并发补肠】13~15 补热区回补中止：烤盘${kaoPan.positionSn} -> 烤盘${it.positionSn} 搬移失败，本批次停止继续下发"
+                            )
+                            return
+                        }
                     } ?: LogUtils.w(
                         TAG,
                         "【低并发补肠】13~15 补热区烤熟回补失败：未找到同口味前区待补位，烤盘=${kaoPan.positionSn}，口味=${kaoPan.taste.tasteCode}"
@@ -428,11 +435,18 @@ object LowCurrentTrafficMode {
                         requireReserved = true
                     )
                     targetPan?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(
+                        val moveSuccess = KaoChangOperate.moveKaoPanToKaoPan(
                             kaoPan,
                             it,
                             targetHoldingTime = System.currentTimeMillis()
                         )
+                        if (!moveSuccess) {
+                            LogUtils.w(
+                                TAG,
+                                "【低并发补肠】16~18 补热区回补中止：烤盘${kaoPan.positionSn} -> 烤盘${it.positionSn} 搬移失败，本批次停止继续下发"
+                            )
+                            return
+                        }
                     } ?: LogUtils.w(
                         TAG,
                         "【低并发补肠】16~18 补热区烤熟回补失败：未找到同口味前区待补位，烤盘=${kaoPan.positionSn}，口味=${kaoPan.taste.tasteCode}"

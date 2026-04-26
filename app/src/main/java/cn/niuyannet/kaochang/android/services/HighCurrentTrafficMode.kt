@@ -381,7 +381,14 @@ object HighCurrentTrafficMode {
                             TAG,
                             "【并发切换】高转低收拢：烤盘${kaoPan.positionSn} -> 烤盘${remainingPositions1_9[index].positionSn}，holdingTime=${kaoPan.holdingTime}"
                         )
-                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, remainingPositions1_9[index])
+                        val moveSuccess = KaoChangOperate.moveKaoPanToKaoPan(kaoPan, remainingPositions1_9[index])
+                        if (!moveSuccess) {
+                            LogUtils.w(
+                                TAG,
+                                "【并发切换】高转低收拢中止：烤盘${kaoPan.positionSn} -> 烤盘${remainingPositions1_9[index].positionSn} 搬移失败，本轮不再继续收拢"
+                            )
+                            return
+                        }
                     }
                 }
             }
@@ -539,7 +546,14 @@ object HighCurrentTrafficMode {
                     val tasteCode = kaoPan.taste.tasteCode
                     val targetPan = TrafficModeHelper.selectFrontTargetPan(list1_21, tasteCode)
                     targetPan?.let {
-                        KaoChangOperate.moveKaoPanToKaoPan(kaoPan, it)
+                        val moveSuccess = KaoChangOperate.moveKaoPanToKaoPan(kaoPan, it)
+                        if (!moveSuccess) {
+                            LogUtils.w(
+                                TAG,
+                                "【高并发补肠】25~33 回补中止：烤盘${kaoPan.positionSn} -> 烤盘${it.positionSn} 搬移失败，本批次停止继续下发"
+                            )
+                            return
+                        }
                     }
                 }
             }

@@ -118,9 +118,10 @@ object SendServerHelper {
 
     /**
      * 通过 MQTT 上报订单动作事件（action=1）。
-     * `status（订单事件状态）` 的含义仍保持不变：
+     * `status（订单事件状态）` 当前约定：
      * - 1 = 开始夹取
-     * - 2 = 单次履约完成
+     * - 2 = 单次履约完成，顾客已取走
+     * - 3 = 已出餐但顾客未取，系统已丢弃
      * - 5 = 单次履约失败
      */
     fun publishServiceUpdateOrder(msgObj: JSONObject): Boolean {

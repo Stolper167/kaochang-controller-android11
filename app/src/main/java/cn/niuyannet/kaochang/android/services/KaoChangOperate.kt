@@ -40,6 +40,8 @@ object KaoChangOperate {
     private const val LOG_SELL_MONITOR = "售卖口监控"
     private const val LOG_WINDOW = "窗口收尾"
     private const val LOG_SUPPLEMENT = "补肠流程"
+    private const val LOG_LINKED_LOAD = "联动上料"
+    private const val LOG_LINKED_DELIVERY = "联动卖肠"
     private const val LOG_PAN_MOVE = "烤盘搬移"
     private const val LOG_HEAT = "加热控制"
     private const val LOG_DEVICE = "设备状态"
@@ -56,6 +58,58 @@ object KaoChangOperate {
     private const val SELL_PLATFORM_MONITOR_INTERVAL_MS = 1000L
     private const val SELL_PLATFORM_WAIT_TIMEOUT_MS = 15_000L
     private const val SELL_PLATFORM_CAPTURE_FAILURE_TOLERANCE = 2
+    private const val SELL_PLATFORM_EMPTY_MONITOR_CONFIRM_ROUNDS_BEFORE_ASSUME_TAKEN = 3
+    private const val TRAY_MOVE_RUNNING_TIMEOUT_MS = 60_000L
+    private const val TRAY_MOVE_RECOVERY_GRACE_MS = 8_000L
+    private const val TRAY_MOVE_POLL_INTERVAL_MS = 1_000L
+    private const val TRAY_MOVE_STATUS_RUNNING = 1
+    private const val TRAY_MOVE_STATUS_INVALID_SLOT = 0x0002
+    private const val TRAY_MOVE_STATUS_REJECTED_PROTECTED = 0x00D1
+    private const val TRAY_MOVE_STATUS_REJECTED_BUSY = 0x00D2
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_ABOVE_RECOVERED = 0x00E1
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_Z_RECOVERED = 0x00E2
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_SCOOP_RECOVERED = 0x00E3
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_LIFT_RECOVERED = 0x00E4
+    private const val TRAY_MOVE_STATUS_TIMEOUT_DST_ABOVE_RECOVERED = 0x00E5
+    private const val TRAY_MOVE_STATUS_TIMEOUT_DST_Z_RECOVERED = 0x00E6
+    private const val TRAY_MOVE_STATUS_TIMEOUT_FINISH_RECOVERED = 0x00E7
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_ABOVE_RECOVERY_FAILED = 0x00F1
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_Z_RECOVERY_FAILED = 0x00F2
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_SCOOP_RECOVERY_FAILED = 0x00F3
+    private const val TRAY_MOVE_STATUS_TIMEOUT_SRC_LIFT_RECOVERY_FAILED = 0x00F4
+    private const val TRAY_MOVE_STATUS_TIMEOUT_DST_ABOVE_RECOVERY_FAILED = 0x00F5
+    private const val TRAY_MOVE_STATUS_TIMEOUT_DST_Z_RECOVERY_FAILED = 0x00F6
+    private const val TRAY_MOVE_STATUS_TIMEOUT_FINISH_RECOVERY_FAILED = 0x00F7
+    private const val LINKED_LOAD_CMD_REGISTER = 210
+    private const val LINKED_LOAD_PARAM_REGISTER = 211
+    private const val LINKED_LOAD_STATUS_REGISTER = 213
+    private const val LINKED_LOAD_PKG1_REGISTER = 214
+    private const val LINKED_LOAD_PKG4_REGISTER = 217
+    private const val LINKED_LOAD_CMD_START = 0x0001
+    private const val LINKED_LOAD_CMD_RETRY = 0x0002
+    private const val LINKED_LOAD_CMD_NEXT = 0x0003
+    private const val LINKED_LOAD_STATUS_IDLE = 0x0000
+    private const val LINKED_LOAD_STATUS_RUNNING = 0x0001
+    private const val LINKED_LOAD_STATUS_WAIT_HOST = 0x0002
+    private const val LINKED_LOAD_STATUS_FINISH = 0x0003
+    private const val LINKED_LOAD_PKG_STATE_IDLE = 0x0000
+    private const val LINKED_LOAD_PKG_STATE_RUNNING = 0x0001
+    private const val LINKED_LOAD_PKG_STATE_SUCCESS = 0x0002
+    private const val LINKED_LOAD_POLL_INTERVAL_MS = 500L
+    private const val LINKED_LOAD_STALL_TIMEOUT_MS = 8_000L
+    private const val LINKED_LOAD_RUNNING_STALL_TIMEOUT_MS = 60_000L
+    private const val LINKED_DELIVERY_CMD_REGISTER = 220
+    private const val LINKED_DELIVERY_PARAM_REGISTER = 221
+    private const val LINKED_DELIVERY_STATUS_REGISTER = 223
+    private const val LINKED_DELIVERY_PKG1_REGISTER = 224
+    private const val LINKED_DELIVERY_PKG4_REGISTER = 227
+    private const val LINKED_DELIVERY_POLL_INTERVAL_MS = 500L
+    private const val LINKED_DELIVERY_STALL_TIMEOUT_MS = 8_000L
+    private const val LINKED_DELIVERY_RUNNING_STALL_TIMEOUT_MS = 60_000L
+    private const val LINKED_LOAD_MAX_RETRIES = 2
+    private const val LINKED_LOAD_RETRY_DELAY_MS = 10_000L
+    private const val LINKED_DELIVERY_MAX_RETRIES = 2
+    private const val LINKED_DELIVERY_RETRY_DELAY_MS = 10_000L
     /**
      * 机械动作对象内部的主线程作用域。
      *
@@ -128,6 +182,7 @@ object KaoChangOperate {
     enum class TakeSausageResult {
         TAKEN_BY_USER,
         DISCARDED,
+        DELIVERY_NOT_CONFIRMED,
         ERROR
     }
 
@@ -137,6 +192,29 @@ object KaoChangOperate {
         val targetLabel: String,
         val status201: Int,
         val message: String
+    )
+
+    private data class TrayMoveStatus203(
+        val raw: Int,
+        val desc: String,
+        val isSuccess: Boolean,
+        val isRunning: Boolean,
+        val isReadFailure: Boolean,
+        val indicatesRecoveredAbort: Boolean
+    )
+
+    private data class LinkedLoadSnapshot(
+        val statusRaw: Int,
+        val currentPkgNo: Int,
+        val currentResultCode: Int,
+        val pkgStates: IntArray
+    )
+
+    private data class LinkedDeliverySnapshot(
+        val statusRaw: Int,
+        val currentPkgNo: Int,
+        val currentResultCode: Int,
+        val pkgStates: IntArray
     )
 
     private fun tryRecoverIdleMoveStatus(reason: String): Boolean {
@@ -367,10 +445,15 @@ object KaoChangOperate {
             armPostSellSupplementGuard("售卖台关门成功")
             if (detectedSausageBeforeEmpty) {
                 logI(LOG_SELL_MONITOR, "售卖台关窗完成：关窗原因=$closeReason；售卖台曾检测到烤肠，复核已为空，判定客户已经把肠取走")
+                TakeSausageResult.TAKEN_BY_USER
             } else {
-                logW(LOG_SELL_MONITOR, "售卖台关窗完成：关窗原因=$closeReason；售卖台监控阶段未检测到烤肠，按兼容策略判定客户已经把肠取走")
+                logW(
+                    LOG_SELL_MONITOR,
+                    "售卖台关窗完成：关窗原因=$closeReason；售卖台在整个监控阶段都未确认到货，" +
+                        "本次履约记为未确认送达，禁止再按顾客已取走计成功"
+                )
+                TakeSausageResult.DELIVERY_NOT_CONFIRMED
             }
-            TakeSausageResult.TAKEN_BY_USER
         }
     }
 
@@ -396,6 +479,7 @@ object KaoChangOperate {
     ): TakeSausageResult {
         var consecutiveCaptureFailures = 0
         var detectedSausage = detectedSausageBeforeMonitor
+        var pendingEmptyRoundsBeforeArrival = 0
         var monitorRound = 0
         while (System.currentTimeMillis() < detectDeadlineMs) {
             delay(SELL_PLATFORM_MONITOR_INTERVAL_MS)
@@ -416,10 +500,28 @@ object KaoChangOperate {
                 detectResult.code == 2 -> {
                     consecutiveCaptureFailures = 0
                     detectedSausage = true
+                    pendingEmptyRoundsBeforeArrival = 0
                     logD(LOG_SELL_MONITOR, "售卖台轮询检测到烤肠仍在，继续等待顾客取走")
                 }
 
                 else -> {
+                    if (!detectedSausage) {
+                        pendingEmptyRoundsBeforeArrival++
+                        if (pendingEmptyRoundsBeforeArrival < SELL_PLATFORM_EMPTY_MONITOR_CONFIRM_ROUNDS_BEFORE_ASSUME_TAKEN) {
+                            val resultDesc = if (detectResult.code == 1) {
+                                "视觉识别到无肠(code=1)"
+                            } else {
+                                "视觉返回非有肠结果(code=${detectResult.code})"
+                            }
+                            logW(
+                                LOG_SELL_MONITOR,
+                                "售卖台尚未确认到货，本次先不关窗：result=$resultDesc，" +
+                                    "emptyRounds=$pendingEmptyRoundsBeforeArrival/" +
+                                    "$SELL_PLATFORM_EMPTY_MONITOR_CONFIRM_ROUNDS_BEFORE_ASSUME_TAKEN，继续等待烤肠进入稳定识别区"
+                            )
+                            continue
+                        }
+                    }
                     val closeReason = if (detectResult.code == 1) {
                         "视觉识别到无肠(code=1)"
                     } else {
@@ -438,7 +540,8 @@ object KaoChangOperate {
     ): TakeSausageResult {
         logW(
             LOG_SELL_MONITOR,
-            "售卖台首次确认阶段连续拍照失败，进入兼容等待窗口；若视觉恢复则回到正常确认流程，若在等待时间内仍未恢复，则按已送达处理，不进入维护"
+            "售卖台首次确认阶段连续拍照失败，进入兼容等待窗口；若视觉恢复则回到正常确认流程，" +
+                "若在等待时间内仍未恢复，则本次履约记为未确认送达"
         )
         var loggedWaitingWithoutVision = false
         var monitorRound = 0
@@ -464,7 +567,7 @@ object KaoChangOperate {
                 }
 
                 else -> {
-                    logW(LOG_SELL_MONITOR, "售卖台视觉已恢复，检测到窗口为空，按顾客已取走处理")
+                    logW(LOG_SELL_MONITOR, "售卖台视觉已恢复，但窗口为空且此前未确认到货，本次履约记为未确认送达")
                     val closeReason = if (detectResult.code == 1) {
                         "视觉恢复后识别到无肠(code=1)"
                     } else {
@@ -480,12 +583,587 @@ object KaoChangOperate {
 
         logW(
             LOG_SELL_MONITOR,
-            "售卖台首次确认阶段连续拍照失败，在兼容等待窗口内视觉仍未恢复；按机械已送达处理并执行关门，不进入维护"
+            "售卖台首次确认阶段连续拍照失败，在兼容等待窗口内视觉仍未恢复；执行关门并返回未确认送达，等待上层将设备切到维护中"
         )
         return closeSellPlatformAfterUserTake(
             detectedSausageBeforeEmpty = false,
-            closeReason = "兼容等待窗口结束，视觉仍未恢复，按机械已送达兜底关窗"
+            closeReason = "兼容等待窗口结束，视觉仍未恢复"
         )
+    }
+
+    private fun linkedLoadStatusDesc(resultCode: Int): String = when (resultCode) {
+        LINKED_LOAD_STATUS_IDLE -> "0x0000(IDLE/空闲)"
+        LINKED_LOAD_STATUS_RUNNING -> "0x0001(RUNNING/当前包执行中)"
+        LINKED_LOAD_STATUS_WAIT_HOST -> "0x0002(WAIT_HOST/当前包成功暂停，等待上位机下一步)"
+        LINKED_LOAD_STATUS_FINISH -> "0x0003(FINISH/整轮完成)"
+        in 0x00E1..0x00EF -> "0x${resultCode.toString(16).uppercase()}(ERROR/当前包失败)"
+        else -> "0x${resultCode.toString(16).uppercase()}(UNKNOWN/未知状态)"
+    }
+
+    private fun linkedLoadPkgStateDesc(pkgState: Int): String = when (pkgState) {
+        LINKED_LOAD_PKG_STATE_IDLE -> "0x0000(IDLE/未执行)"
+        LINKED_LOAD_PKG_STATE_RUNNING -> "0x0001(RUNNING/执行中)"
+        LINKED_LOAD_PKG_STATE_SUCCESS -> "0x0002(SUCCESS/当前包成功)"
+        in 0x00E1..0x00EF -> "0x${pkgState.toString(16).uppercase()}(ERROR/当前包失败)"
+        else -> "0x${pkgState.toString(16).uppercase()}(UNKNOWN/未知包状态)"
+    }
+
+    private fun linkedLoadErrorDesc(pkgNo: Int, errorCode: Int): String = when (pkgNo) {
+        1 -> when (errorCode) {
+            0x00E1 -> "包1失败：源肠箱编号非法或命中预留位"
+            0x00E2 -> "包1失败：下平台 X 复位错误"
+            0x00E3 -> "包1失败：下平台 Y 复位错误"
+            0x00E4 -> "包1失败：升降台堵转错误"
+            0x00E5 -> "包1失败：红外启用时未检测到成功取到肠"
+            else -> "包1失败：未知错误"
+        }
+        2 -> when (errorCode) {
+            0x00E1 -> "包2失败：下平台 X 复位错误"
+            0x00E2 -> "包2失败：下平台 Y 复位错误"
+            0x00E3 -> "包2失败：升降台堵转错误"
+            0x00E4 -> "包2失败：红外启用时未检测到肠已抛离滚筒"
+            else -> "包2失败：未知错误"
+        }
+        3 -> when (errorCode) {
+            0x00E1 -> "包3失败：升降台堵转错误"
+            0x00E2 -> "包3失败：下平台状态机异常"
+            else -> "包3失败：未知错误"
+        }
+        4 -> when (errorCode) {
+            0x00E2 -> "包4失败：目标烤位非法"
+            0x00E3 -> "包4失败：上平台或穿签相关错误"
+            else -> "包4失败：未知错误"
+        }
+        else -> "未知动作包失败"
+    }
+
+    private fun parseLinkedLoadSnapshot(rawValues: IntArray?): LinkedLoadSnapshot? {
+        if (rawValues == null || rawValues.size < 5) {
+            return null
+        }
+        val statusRaw = rawValues[0]
+        return LinkedLoadSnapshot(
+            statusRaw = statusRaw,
+            currentPkgNo = (statusRaw ushr 8) and 0xFF,
+            currentResultCode = statusRaw and 0xFF,
+            pkgStates = rawValues.copyOfRange(1, 5)
+        )
+    }
+
+    private fun linkedLoadSnapshotDesc(snapshot: LinkedLoadSnapshot?): String {
+        if (snapshot == null) {
+            return "READ_FAIL(读取213~217失败/通信断开)"
+        }
+        val pkgStates = snapshot.pkgStates.mapIndexed { index, value ->
+            "pkg${index + 1}=${linkedLoadPkgStateDesc(value)}"
+        }.joinToString(", ")
+        return "status=0x${snapshot.statusRaw.toString(16).uppercase().padStart(4, '0')}(" +
+            "pkg=${snapshot.currentPkgNo}, result=${linkedLoadStatusDesc(snapshot.currentResultCode)}), $pkgStates"
+    }
+
+    private suspend fun writeLinkedLoadRegister(
+        register: Int,
+        value: Int,
+        action: String
+    ): VMModbusHelper.ModbusOperationResult {
+        delay(150L)
+        return VMModbusHelper.writeSingleRegister(
+            modbus_address,
+            register,
+            value,
+            traceContext = VMModbusHelper.ModbusWriteTraceContext(
+                source = "KaoChangOperate.executeLinkedLoadTransaction（联动补肠事务）",
+                action = action
+            )
+        )
+    }
+
+    private fun readLinkedLoadSnapshot(): LinkedLoadSnapshot? {
+        return parseLinkedLoadSnapshot(VMModbusHelper.readHoldingRegisters(modbus_address, LINKED_LOAD_STATUS_REGISTER, 5))
+    }
+
+    private fun getLinkedLoadTimeoutMs(): Long {
+        return maxOf(120_000L, getBoxToPlatformTimeoutMs() + 60_000L)
+    }
+
+    private fun getLinkedLoadStallTimeoutMs(snapshot: LinkedLoadSnapshot?): Long {
+        return if (snapshot?.currentResultCode == LINKED_LOAD_STATUS_RUNNING) {
+            LINKED_LOAD_RUNNING_STALL_TIMEOUT_MS
+        } else {
+            LINKED_LOAD_STALL_TIMEOUT_MS
+        }
+    }
+
+    private suspend fun executeLinkedLoadTransactionWithRetry(
+        sourceBoxPosition: Int,
+        targetPanPosition: Int,
+        sausageName: String,
+        maxRetries: Int = LINKED_LOAD_MAX_RETRIES,
+        retryDelayMs: Long = LINKED_LOAD_RETRY_DELAY_MS
+    ): Boolean {
+        repeat(maxRetries + 1) { attempt ->
+            if (attempt > 0) {
+                logW(
+                    LOG_LINKED_LOAD,
+                    "联动上料第${attempt}次重试：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                        "等待${retryDelayMs}ms后重发指令"
+                )
+                delay(retryDelayMs)
+            }
+            val success = executeLinkedLoadTransaction(
+                sourceBoxPosition = sourceBoxPosition,
+                targetPanPosition = targetPanPosition,
+                sausageName = sausageName
+            )
+            if (success) return true
+            if (attempt < maxRetries) {
+                logW(
+                    LOG_LINKED_LOAD,
+                    "联动上料第${attempt + 1}次尝试失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                        "剩余重试次数=${maxRetries - attempt - 1}"
+                )
+            }
+        }
+        logE(
+            LOG_LINKED_LOAD,
+            "联动上料全部${maxRetries + 1}次尝试均失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition"
+        )
+        return false
+    }
+
+    private suspend fun executeLinkedLoadTransaction(
+        sourceBoxPosition: Int,
+        targetPanPosition: Int,
+        sausageName: String
+    ): Boolean {
+        if (!ensureModbusReady("联动补肠事务启动")) {
+            logE(
+                LOG_LINKED_LOAD,
+                "联动上料启动失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，reason=下位机通信未恢复"
+            )
+            return false
+        }
+
+        val paramValue = ((sourceBoxPosition and 0xFF) shl 8) or (targetPanPosition and 0xFF)
+        logD(
+            LOG_LINKED_LOAD,
+            "开始联动上料事务：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                "sausage=$sausageName，param=0x${paramValue.toString(16).uppercase().padStart(4, '0')}"
+        )
+
+        val writeParamResult = writeLinkedLoadRegister(
+            register = LINKED_LOAD_PARAM_REGISTER,
+            value = paramValue,
+            action = "linked_load_param（源肠箱=$sourceBoxPosition，目标烤盘=$targetPanPosition）"
+        )
+        if (!writeParamResult.isSuccess) {
+            logE(
+                LOG_LINKED_LOAD,
+                "联动上料写参数失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，status=${writeParamResult.status}"
+            )
+            return false
+        }
+
+        // 在写 START 前记录当前快照，用于过滤旧会话的残留状态
+        val preStartStatusRaw = readLinkedLoadSnapshot()?.statusRaw ?: -1
+
+        val startResult = writeLinkedLoadRegister(
+            register = LINKED_LOAD_CMD_REGISTER,
+            value = LINKED_LOAD_CMD_START,
+            action = "linked_load_start（启动上料分步会话）"
+        )
+        if (!startResult.isSuccess) {
+            logE(
+                LOG_LINKED_LOAD,
+                "联动上料启动命令下发失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，status=${startResult.status}"
+            )
+            return false
+        }
+
+        logD(
+            LOG_LINKED_LOAD,
+            "联动上料 START 已下发，等待固件进入本轮新会话：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                "preStartStatusRaw=0x${preStartStatusRaw.toString(16).uppercase().padStart(4, '0')}"
+        )
+
+        val deadline = System.currentTimeMillis() + getLinkedLoadTimeoutMs()
+        val sessionStartMs = System.currentTimeMillis()
+        var sessionStarted = false   // 门闩：statusRaw 脱离旧值后才开放成功/失败判断
+        var lastSnapshotKey = ""
+        var lastProgressAtMs = System.currentTimeMillis()
+        var nextIssuedAtMs = 0L
+
+        while (System.currentTimeMillis() < deadline) {
+            val snapshot = readLinkedLoadSnapshot()
+            val snapshotKey = snapshot?.let { "${it.statusRaw}:${it.pkgStates.joinToString(",")}" } ?: "read_fail"
+            if (snapshotKey != lastSnapshotKey) {
+                logD(
+                    LOG_LINKED_LOAD,
+                    "联动上料状态变化：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                        "sessionStarted=$sessionStarted，${linkedLoadSnapshotDesc(snapshot)}"
+                )
+                lastSnapshotKey = snapshotKey
+                lastProgressAtMs = System.currentTimeMillis()
+            }
+
+            if (snapshot == null) {
+                delay(LINKED_LOAD_POLL_INTERVAL_MS)
+                continue
+            }
+
+            // 门闩检查：必须观察到 RUNNING 或 ERROR 才算本轮会话真正启动。
+            // 仅 statusRaw 变化不够——FINISH→IDLE 这段过渡态也会触发变化，
+            // 但 IDLE 可能是固件两轮会话之间的回原点/除冰动作，并非新会话开始。
+            if (!sessionStarted) {
+                val resultCode = snapshot.currentResultCode
+                val isNewSessionActive = resultCode == LINKED_LOAD_STATUS_RUNNING ||
+                    resultCode in 0x00E1..0x00EF
+                if (isNewSessionActive) {
+                    sessionStarted = true
+                    logD(
+                        LOG_LINKED_LOAD,
+                        "联动上料本轮会话已确认启动：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                            "preStartStatusRaw=0x${preStartStatusRaw.toString(16).uppercase().padStart(4, '0')}，" +
+                            "currentStatusRaw=0x${snapshot.statusRaw.toString(16).uppercase().padStart(4, '0')}"
+                    )
+                } else {
+                    // IDLE 或其他过渡态，固件尚未进入本轮执行（可能正在回原点/除冰），继续等待
+                    delay(LINKED_LOAD_POLL_INTERVAL_MS)
+                    continue
+                }
+            }
+
+            if (snapshot.currentPkgNo == 4 && snapshot.currentResultCode == LINKED_LOAD_STATUS_FINISH) {
+                logI(
+                    LOG_LINKED_LOAD,
+                    "联动上料完成：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，sausage=$sausageName，" +
+                        "sessionElapsedMs=${System.currentTimeMillis() - sessionStartMs}"
+                )
+                return true
+            }
+
+            val currentPkgState = snapshot.pkgStates.getOrNull(snapshot.currentPkgNo - 1)
+            if (snapshot.currentResultCode == LINKED_LOAD_STATUS_WAIT_HOST &&
+                snapshot.currentPkgNo in 1..4 &&
+                currentPkgState == LINKED_LOAD_PKG_STATE_SUCCESS
+            ) {
+                val now = System.currentTimeMillis()
+                if (now - nextIssuedAtMs >= 1_000L) {
+                    val nextResult = writeLinkedLoadRegister(
+                        register = LINKED_LOAD_CMD_REGISTER,
+                        value = LINKED_LOAD_CMD_NEXT,
+                        action = "linked_load_next（动作包${snapshot.currentPkgNo}成功后推进下一包）"
+                    )
+                    if (!nextResult.isSuccess) {
+                        logE(
+                            LOG_LINKED_LOAD,
+                            "联动上料推进下一包失败：pkg=${snapshot.currentPkgNo}，sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，status=${nextResult.status}"
+                        )
+                        return false
+                    }
+                    nextIssuedAtMs = now
+                    logD(
+                        LOG_LINKED_LOAD,
+                        "联动上料自动推进下一包：pkg=${snapshot.currentPkgNo}，sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition"
+                    )
+                }
+            }
+
+            val failedPkgNo = snapshot.pkgStates.indexOfFirst { it in 0x00E1..0x00EF }.let { if (it >= 0) it + 1 else -1 }
+            if (failedPkgNo > 0) {
+                val errorCode = snapshot.pkgStates[failedPkgNo - 1]
+                logE(
+                    LOG_LINKED_LOAD,
+                    "联动上料失败：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                        "pkg=$failedPkgNo，error=${linkedLoadErrorDesc(failedPkgNo, errorCode)}，snapshot=${linkedLoadSnapshotDesc(snapshot)}"
+                )
+                return false
+            }
+
+            val stallTimeoutMs = getLinkedLoadStallTimeoutMs(snapshot)
+            if (System.currentTimeMillis() - lastProgressAtMs >= stallTimeoutMs) {
+                logE(
+                    LOG_LINKED_LOAD,
+                    "联动上料状态长期无进展：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，" +
+                        "stallMs=${System.currentTimeMillis() - lastProgressAtMs}，" +
+                        "stallTimeoutMs=$stallTimeoutMs，snapshot=${linkedLoadSnapshotDesc(snapshot)}"
+                )
+                return false
+            }
+
+            delay(LINKED_LOAD_POLL_INTERVAL_MS)
+        }
+
+        logE(
+            LOG_LINKED_LOAD,
+            "联动上料超时：sourceBox=$sourceBoxPosition，targetPan=$targetPanPosition，timeoutMs=${getLinkedLoadTimeoutMs()}"
+        )
+        return false
+    }
+
+    private fun linkedDeliveryStatusDesc(resultCode: Int): String = when (resultCode) {
+        LINKED_LOAD_STATUS_IDLE -> "0x0000(IDLE/空闲)"
+        LINKED_LOAD_STATUS_RUNNING -> "0x0001(RUNNING/当前包执行中)"
+        LINKED_LOAD_STATUS_WAIT_HOST -> "0x0002(WAIT_HOST/当前包成功暂停，等待上位机下一步)"
+        LINKED_LOAD_STATUS_FINISH -> "0x0003(FINISH/整轮完成)"
+        in 0x00E1..0x00EF -> "0x${resultCode.toString(16).uppercase()}(ERROR/当前包失败)"
+        else -> "0x${resultCode.toString(16).uppercase()}(UNKNOWN/未知状态)"
+    }
+
+    private fun linkedDeliveryPkgStateDesc(pkgState: Int): String = when (pkgState) {
+        LINKED_LOAD_PKG_STATE_IDLE -> "0x0000(IDLE/未执行)"
+        LINKED_LOAD_PKG_STATE_RUNNING -> "0x0001(RUNNING/执行中)"
+        LINKED_LOAD_PKG_STATE_SUCCESS -> "0x0002(SUCCESS/当前包成功)"
+        in 0x00E1..0x00EF -> "0x${pkgState.toString(16).uppercase()}(ERROR/当前包失败)"
+        else -> "0x${pkgState.toString(16).uppercase()}(UNKNOWN/未知包状态)"
+    }
+
+    private fun linkedDeliveryErrorDesc(pkgNo: Int, errorCode: Int): String = when (pkgNo) {
+        1 -> when (errorCode) {
+            0x00E1 -> "包1失败：目标烤位非法"
+            0x00E2 -> "包1失败：穿签错误残留或流程错误"
+            else -> "包1失败：未知错误"
+        }
+        2 -> when (errorCode) {
+            0x00E1 -> "包2失败：目标烤位非法"
+            0x00E2 -> "包2失败：穿签失败"
+            else -> "包2失败：未知错误"
+        }
+        3 -> when (errorCode) {
+            0x00E1 -> "包3失败：目标烤位非法"
+            else -> "包3失败：未知错误"
+        }
+        4 -> when (errorCode) {
+            0x00E1 -> "包4失败：目标烤位非法"
+            0x00E2 -> "包4失败：上平台动作错误"
+            else -> "包4失败：未知错误"
+        }
+        else -> "未知动作包失败"
+    }
+
+    private fun parseLinkedDeliverySnapshot(rawValues: IntArray?): LinkedDeliverySnapshot? {
+        if (rawValues == null || rawValues.size < 5) {
+            return null
+        }
+        val statusRaw = rawValues[0]
+        return LinkedDeliverySnapshot(
+            statusRaw = statusRaw,
+            currentPkgNo = (statusRaw ushr 8) and 0xFF,
+            currentResultCode = statusRaw and 0xFF,
+            pkgStates = rawValues.copyOfRange(1, 5)
+        )
+    }
+
+    private fun linkedDeliverySnapshotDesc(snapshot: LinkedDeliverySnapshot?): String {
+        if (snapshot == null) {
+            return "READ_FAIL(读取223~227失败/通信断开)"
+        }
+        val pkgStates = snapshot.pkgStates.mapIndexed { index, value ->
+            "pkg${index + 1}=${linkedDeliveryPkgStateDesc(value)}"
+        }.joinToString(", ")
+        return "status=0x${snapshot.statusRaw.toString(16).uppercase().padStart(4, '0')}(" +
+            "pkg=${snapshot.currentPkgNo}, result=${linkedDeliveryStatusDesc(snapshot.currentResultCode)}), $pkgStates"
+    }
+
+    private suspend fun writeLinkedDeliveryRegister(
+        register: Int,
+        value: Int,
+        action: String
+    ): VMModbusHelper.ModbusOperationResult {
+        delay(150L)
+        return VMModbusHelper.writeSingleRegister(
+            modbus_address,
+            register,
+            value,
+            traceContext = VMModbusHelper.ModbusWriteTraceContext(
+                source = "KaoChangOperate.executeLinkedDeliveryTransaction（联动卖肠事务）",
+                action = action
+            )
+        )
+    }
+
+    private fun readLinkedDeliverySnapshot(): LinkedDeliverySnapshot? {
+        return parseLinkedDeliverySnapshot(
+            VMModbusHelper.readHoldingRegisters(modbus_address, LINKED_DELIVERY_STATUS_REGISTER, 5)
+        )
+    }
+
+    private fun getLinkedDeliveryTimeoutMs(): Long {
+        return maxOf(120_000L, getTrayToSellPlatformTimeoutMs() + 60_000L)
+    }
+
+    private suspend fun executeLinkedDeliveryTransaction(
+        targetPanPosition: Int,
+        sausageName: String
+    ): Boolean {
+        if (!ensureModbusReady("联动卖肠事务启动")) {
+            logE(
+                LOG_LINKED_DELIVERY,
+                "联动卖肠启动失败：targetPan=$targetPanPosition，sausage=$sausageName，reason=下位机通信未恢复"
+            )
+            return false
+        }
+
+        val paramValue = ((targetPanPosition and 0xFF) shl 8)
+        logD(
+            LOG_LINKED_DELIVERY,
+            "开始联动卖肠事务：targetPan=$targetPanPosition，sausage=$sausageName，param=0x${paramValue.toString(16).uppercase().padStart(4, '0')}"
+        )
+
+        val writeParamResult = writeLinkedDeliveryRegister(
+            register = LINKED_DELIVERY_PARAM_REGISTER,
+            value = paramValue,
+            action = "linked_delivery_param（目标烤盘=$targetPanPosition）"
+        )
+        if (!writeParamResult.isSuccess) {
+            logE(
+                LOG_LINKED_DELIVERY,
+                "联动卖肠写参数失败：targetPan=$targetPanPosition，sausage=$sausageName，status=${writeParamResult.status}"
+            )
+            return false
+        }
+
+        // 在写 START 前记录当前快照，用于过滤旧会话的残留状态
+        val preStartStatusRaw = readLinkedDeliverySnapshot()?.statusRaw ?: -1
+
+        val startResult = writeLinkedDeliveryRegister(
+            register = LINKED_DELIVERY_CMD_REGISTER,
+            value = LINKED_LOAD_CMD_START,
+            action = "linked_delivery_start（启动卖肠分步会话）"
+        )
+        if (!startResult.isSuccess) {
+            logE(
+                LOG_LINKED_DELIVERY,
+                "联动卖肠启动命令下发失败：targetPan=$targetPanPosition，sausage=$sausageName，status=${startResult.status}"
+            )
+            return false
+        }
+
+        logD(
+            LOG_LINKED_DELIVERY,
+            "联动卖肠 START 已下发，等待固件进入本轮新会话：targetPan=$targetPanPosition，sausage=$sausageName，" +
+                "preStartStatusRaw=0x${preStartStatusRaw.toString(16).uppercase().padStart(4, '0')}"
+        )
+
+        val deadline = System.currentTimeMillis() + getLinkedDeliveryTimeoutMs()
+        val sessionStartMs = System.currentTimeMillis()
+        var sessionStarted = false   // 门闩：statusRaw 脱离旧值后才开放成功/失败判断
+        var lastSnapshotKey = ""
+        var lastProgressAtMs = System.currentTimeMillis()
+        var nextIssuedAtMs = 0L
+
+        while (System.currentTimeMillis() < deadline) {
+            val snapshot = readLinkedDeliverySnapshot()
+            val snapshotKey = snapshot?.let { "${it.statusRaw}:${it.pkgStates.joinToString(",")}" } ?: "read_fail"
+            if (snapshotKey != lastSnapshotKey) {
+                logD(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠状态变化：targetPan=$targetPanPosition，sausage=$sausageName，" +
+                        "sessionStarted=$sessionStarted，${linkedDeliverySnapshotDesc(snapshot)}"
+                )
+                lastSnapshotKey = snapshotKey
+                lastProgressAtMs = System.currentTimeMillis()
+            }
+
+            if (snapshot == null) {
+                delay(LINKED_DELIVERY_POLL_INTERVAL_MS)
+                continue
+            }
+
+            // 门闩检查：必须观察到 RUNNING 或 ERROR 才算本轮会话真正启动。
+            // 仅 statusRaw 变化不够——FINISH→IDLE 这段过渡态也会触发变化，
+            // 但 IDLE 可能是固件两轮会话之间的回原点/除冰动作，并非新会话开始。
+            if (!sessionStarted) {
+                val resultCode = snapshot.currentResultCode
+                val isNewSessionActive = resultCode == LINKED_LOAD_STATUS_RUNNING ||
+                    resultCode in 0x00E1..0x00EF
+                if (isNewSessionActive) {
+                    sessionStarted = true
+                    logD(
+                        LOG_LINKED_DELIVERY,
+                        "联动卖肠本轮会话已确认启动：targetPan=$targetPanPosition，sausage=$sausageName，" +
+                            "preStartStatusRaw=0x${preStartStatusRaw.toString(16).uppercase().padStart(4, '0')}，" +
+                            "currentStatusRaw=0x${snapshot.statusRaw.toString(16).uppercase().padStart(4, '0')}"
+                    )
+                } else {
+                    // IDLE 或其他过渡态，固件尚未进入本轮执行（可能正在回原点/除冰），继续等待
+                    delay(LINKED_DELIVERY_POLL_INTERVAL_MS)
+                    continue
+                }
+            }
+
+            if (snapshot.currentPkgNo == 4 && snapshot.currentResultCode == LINKED_LOAD_STATUS_FINISH) {
+                logI(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠完成：targetPan=$targetPanPosition，sausage=$sausageName，" +
+                        "sessionElapsedMs=${System.currentTimeMillis() - sessionStartMs}"
+                )
+                return true
+            }
+
+            val currentPkgState = snapshot.pkgStates.getOrNull(snapshot.currentPkgNo - 1)
+            if (snapshot.currentResultCode == LINKED_LOAD_STATUS_WAIT_HOST &&
+                snapshot.currentPkgNo in 1..4 &&
+                currentPkgState == LINKED_LOAD_PKG_STATE_SUCCESS
+            ) {
+                val now = System.currentTimeMillis()
+                if (now - nextIssuedAtMs >= 1_000L) {
+                    val nextResult = writeLinkedDeliveryRegister(
+                        register = LINKED_DELIVERY_CMD_REGISTER,
+                        value = LINKED_LOAD_CMD_NEXT,
+                        action = "linked_delivery_next（动作包${snapshot.currentPkgNo}成功后推进下一包）"
+                    )
+                    if (!nextResult.isSuccess) {
+                        logE(
+                            LOG_LINKED_DELIVERY,
+                            "联动卖肠推进下一包失败：pkg=${snapshot.currentPkgNo}，targetPan=$targetPanPosition，sausage=$sausageName，status=${nextResult.status}"
+                        )
+                        return false
+                    }
+                    nextIssuedAtMs = now
+                    logD(
+                        LOG_LINKED_DELIVERY,
+                        "联动卖肠自动推进下一包：pkg=${snapshot.currentPkgNo}，targetPan=$targetPanPosition，sausage=$sausageName"
+                    )
+                }
+            }
+
+            val failedPkgNo = snapshot.pkgStates.indexOfFirst { it in 0x00E1..0x00EF }.let { if (it >= 0) it + 1 else -1 }
+            if (failedPkgNo > 0) {
+                val errorCode = snapshot.pkgStates[failedPkgNo - 1]
+                logE(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠失败（板端错误）：targetPan=$targetPanPosition，sausage=$sausageName，pkg=$failedPkgNo，" +
+                        "error=${linkedDeliveryErrorDesc(failedPkgNo, errorCode)}，snapshot=${linkedDeliverySnapshotDesc(snapshot)}"
+                )
+                return false
+            }
+
+            val stallThreshold = if (snapshot.currentResultCode == LINKED_LOAD_STATUS_RUNNING)
+                LINKED_DELIVERY_RUNNING_STALL_TIMEOUT_MS
+            else
+                LINKED_DELIVERY_STALL_TIMEOUT_MS
+            val stallElapsedMs = System.currentTimeMillis() - lastProgressAtMs
+            if (stallElapsedMs >= stallThreshold) {
+                logE(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠状态长期无进展：targetPan=$targetPanPosition，sausage=$sausageName，" +
+                        "stallElapsedMs=$stallElapsedMs，stallThreshold=$stallThreshold，" +
+                        "sessionElapsedMs=${System.currentTimeMillis() - sessionStartMs}，" +
+                        "reason=${if (snapshot.currentResultCode == LINKED_LOAD_STATUS_RUNNING) "running_timeout" else "non_running_stall"}，" +
+                        "snapshot=${linkedDeliverySnapshotDesc(snapshot)}"
+                )
+                return false
+            }
+
+            delay(LINKED_DELIVERY_POLL_INTERVAL_MS)
+        }
+
+        logE(
+            LOG_LINKED_DELIVERY,
+            "联动卖肠超时：targetPan=$targetPanPosition，sausage=$sausageName，timeoutMs=${getLinkedDeliveryTimeoutMs()}"
+        )
+        return false
     }
 
     private suspend fun tryCloseSellPlatformOnError(reason: String) {
@@ -618,6 +1296,91 @@ object KaoChangOperate {
         ActionExecution201State.RUNNING -> "1(RUNNING/执行中)"
         ActionExecution201State.BUSY -> "2(BUSY/设备忙)"
         ActionExecution201State.DISCONNECTED -> "READ_FAIL(读取失败/通信断开)"
+    }
+
+    /**
+     * 解析 203（烤盘搬移状态寄存器）。
+     *
+     * 当前与下位机约定：
+     * - 0：搬盘完成/空闲
+     * - 1：搬盘执行中
+     * - 2：源位或目标位非法
+     * - 0x00D1：被高优先级流程或保护状态拒绝受理
+     * - 0x00D2：设备忙，当前仍有其他动作占用
+     * - 0x00E1~0x00E7：某阶段超时，但下位机已完成一次本地回零/收口
+     * - 0x00F1~0x00F7：某阶段超时，且本地回零/收口也失败
+     * - -1：上位机读取 203 失败
+     */
+    private fun parseTrayMoveStatus203(value: Int): TrayMoveStatus203 {
+        val desc = when (value) {
+            -1 -> "READ_FAIL(读取203失败/通信断开)"
+            0 -> "0(IDLE/搬盘完成)"
+            TRAY_MOVE_STATUS_RUNNING -> "1(RUNNING/搬盘执行中)"
+            TRAY_MOVE_STATUS_INVALID_SLOT -> "2(INVALID_SLOT/源位或目标位非法)"
+            TRAY_MOVE_STATUS_REJECTED_PROTECTED -> "0x00D1(REJECTED_PROTECTED/高优先级流程或保护态拒绝受理)"
+            TRAY_MOVE_STATUS_REJECTED_BUSY -> "0x00D2(REJECTED_BUSY/设备忙，仍有其他动作占用)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_ABOVE_RECOVERED -> "0x00E1(TIMEOUT_SRC_ABOVE_RECOVERED/起始位上方XY到位超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_Z_RECOVERED -> "0x00E2(TIMEOUT_SRC_Z_RECOVERED/起始位Z下降超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_SCOOP_RECOVERED -> "0x00E3(TIMEOUT_SRC_SCOOP_RECOVERED/起始位铲起超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_LIFT_RECOVERED -> "0x00E4(TIMEOUT_SRC_LIFT_RECOVERED/起始位抬升超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_DST_ABOVE_RECOVERED -> "0x00E5(TIMEOUT_DST_ABOVE_RECOVERED/目标位上方XY到位超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_DST_Z_RECOVERED -> "0x00E6(TIMEOUT_DST_Z_RECOVERED/目标位Z下降超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_FINISH_RECOVERED -> "0x00E7(TIMEOUT_FINISH_RECOVERED/目标位释放后收尾超时，已完成一次本地回零)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_ABOVE_RECOVERY_FAILED -> "0x00F1(TIMEOUT_SRC_ABOVE_RECOVERY_FAILED/起始位上方XY到位超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_Z_RECOVERY_FAILED -> "0x00F2(TIMEOUT_SRC_Z_RECOVERY_FAILED/起始位Z下降超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_SCOOP_RECOVERY_FAILED -> "0x00F3(TIMEOUT_SRC_SCOOP_RECOVERY_FAILED/起始位铲起超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_SRC_LIFT_RECOVERY_FAILED -> "0x00F4(TIMEOUT_SRC_LIFT_RECOVERY_FAILED/起始位抬升超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_DST_ABOVE_RECOVERY_FAILED -> "0x00F5(TIMEOUT_DST_ABOVE_RECOVERY_FAILED/目标位上方XY到位超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_DST_Z_RECOVERY_FAILED -> "0x00F6(TIMEOUT_DST_Z_RECOVERY_FAILED/目标位Z下降超时，且本地回零失败)"
+            TRAY_MOVE_STATUS_TIMEOUT_FINISH_RECOVERY_FAILED -> "0x00F7(TIMEOUT_FINISH_RECOVERY_FAILED/目标位释放后收尾超时，且本地回零失败)"
+            else -> "0x${value.toString(16).uppercase()}(UNKNOWN/未定义搬盘状态)"
+        }
+        return TrayMoveStatus203(
+            raw = value,
+            desc = desc,
+            isSuccess = value == 0,
+            isRunning = value == TRAY_MOVE_STATUS_RUNNING,
+            isReadFailure = value == -1,
+            indicatesRecoveredAbort = value in TRAY_MOVE_STATUS_TIMEOUT_SRC_ABOVE_RECOVERED..TRAY_MOVE_STATUS_TIMEOUT_FINISH_RECOVERED
+        )
+    }
+
+    private fun logTrayMoveStatusTransition(
+        sourcePosition: Int,
+        targetPosition: Int,
+        previous: Int?,
+        current: TrayMoveStatus203,
+        stage: String
+    ) {
+        if (previous == current.raw) {
+            return
+        }
+        logD(
+            LOG_PAN_MOVE,
+            "203状态变化：stage=$stage，来源烤盘=$sourcePosition，目标烤盘=$targetPosition，" +
+                "previous=${previous?.let { parseTrayMoveStatus203(it).desc } ?: "INIT"}，current=${current.desc}"
+        )
+    }
+
+    private suspend fun waitTrayMoveRecoveryWindow(
+        sourcePosition: Int,
+        targetPosition: Int,
+        initialResult: Int,
+        graceMs: Long = TRAY_MOVE_RECOVERY_GRACE_MS
+    ): Int {
+        val deadline = System.currentTimeMillis() + graceMs
+        var previous = initialResult
+        while (System.currentTimeMillis() < deadline) {
+            delay(TRAY_MOVE_POLL_INTERVAL_MS)
+            val current = VMModbusHelper.readHoldingRegisters(modbus_address, action_address_move_result)
+            val parsed = parseTrayMoveStatus203(current)
+            logTrayMoveStatusTransition(sourcePosition, targetPosition, previous, parsed, "timeout_grace")
+            if (!parsed.isRunning) {
+                return current
+            }
+            previous = current
+        }
+        return initialResult
     }
 
     private fun readCurrentActionStatus201ForLog(): ActionExecution201State? {
@@ -1016,10 +1779,11 @@ object KaoChangOperate {
     }
 
     /**
-     * 自动补肠：从烤肠箱取一根生肠，经平台/运输台搬到指定烤盘。
+     * 自动补肠：从烤肠箱取一根生肠，经下位机 210~217 联动上料事务送到指定烤盘。
      *
-     * 只有“烤肠箱 -> 平台”和“平台 -> 烤盘”两个动作都成功时，
-     * 才允许扣减烤肠箱库存并写入目标烤盘状态。
+     * 当前稳定性约束：
+     * - 只要任一动作包失败、停滞或通信异常，就不扣减烤肠箱库存、不写目标烤盘有肠；
+     * - 只有整轮事务明确完成（213=0x0403）时，才把库存和烤盘状态一次性落库。
      */
     suspend fun moveSausageToKaoPan(kaoPan: KaoPan, kaoPanBox: KaoPanBox):Boolean {
         if (AppConfig.getAppConfig().errorStatus>0){
@@ -1069,60 +1833,21 @@ object KaoChangOperate {
             "开始补肠：目标烤盘=${kaoPan.positionSn}，来源烤肠箱=${kaoPanBox.positionSn}，口味=$sausageName，" +
                 "箱库存=$boxStockBefore，targetPanHasSausage=${kaoPan.isHasSausage}"
         )
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
-        val result = executeActionWithRetry(
-            actionName = "烤肠箱${kaoPanBox.positionSn}到平台",
-            runningTimeoutMs = getBoxToPlatformTimeoutMs(),
-            requireObservedRunningBeforeSuccess = true
-        ) {
-            writeSingleRegister2(action_address, kaoPanBox.cmdValueTake)
-        }
-        if (result != ActionExecutionResult.SUCCESS) {
+        val moveSuccess = executeLinkedLoadTransactionWithRetry(
+            sourceBoxPosition = kaoPanBox.positionSn,
+            targetPanPosition = kaoPan.positionSn,
+            sausageName = sausageName
+        )
+        if (!moveSuccess) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            if (hadPostSellGuard && result == ActionExecutionResult.PRECHECK_BUSY_TIMEOUT) {
-                deferPostSellAutoSupplement(
-                    targetPanPosition = kaoPan.positionSn,
-                    sourceBoxPosition = kaoPanBox.positionSn,
-                    reason = "烤肠箱到平台在动作启动前持续检测到设备忙",
-                    status201 = readCurrentActionStatus201ForLog()
-                )
-                return false
-            }
-            markActionFailure("烤肠箱${kaoPanBox.positionSn}到平台", result)
-            return false
+            markDeviceErrorAndUpload(
+                "联动上料失败：来源烤肠箱=${kaoPanBox.positionSn}，目标烤盘=${kaoPan.positionSn}，口味=$sausageName，设备进入维护中"
+            )
         }
-        logD(LOG_SUPPLEMENT, "补肠中间态：烤肠($sausageName)已从烤肠箱${kaoPanBox.positionSn}搬运到升降台")
-        kaoPanBox.cmdStatusTake = 0
 
-        val liftPlatformRegisterValue = buildLegacyLiftPlatformRegisterValue()
-        logD(
-            LOG_SUPPLEMENT,
-            "老版本已跳过升降台视觉识别：烤肠($sausageName)按固定安全坐标继续下发，寄存器206=$liftPlatformRegisterValue"
-        )
-        writeSingleRegister2(action_address_shenjiatai, liftPlatformRegisterValue)
-
-        delay(200)
-        logD(LOG_ACTION, "机械臂将烤肠($sausageName)从升降台搬运到烤盘${kaoPan.positionSn}")
-        val result2 = executeActionWithRetry(
-            actionName = "平台到烤盘${kaoPan.positionSn}",
-            requireObservedRunningBeforeSuccess = true
-        ) {
-            writeSingleRegister2(action_address, kaoPan.cmdValueMove)
-        }
-        if (result2 != ActionExecutionResult.SUCCESS) {
-            AppConfig.getAppConfig().moveStatus = 0
-            AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            markActionFailure("平台到烤盘${kaoPan.positionSn}", result2)
-        }
-        logD(
-            LOG_SUPPLEMENT,
-            "补肠完成态：烤肠($sausageName)已从升降台搬运到烤盘${kaoPan.positionSn}，" +
-                "result=${actionExecutionResultDesc(result2)}"
-        )
-
-        kaoPan.cmdStatusMove = if (result2 == ActionExecutionResult.SUCCESS) 0 else 2
-        val moveSuccess = result == ActionExecutionResult.SUCCESS && result2 == ActionExecutionResult.SUCCESS
+        kaoPanBox.cmdStatusTake = if (moveSuccess) 0 else 2
+        kaoPan.cmdStatusMove = if (moveSuccess) 0 else 2
         if (moveSuccess){
             kaoPan.isHasSausage=true
             // 减少烤肠箱中的数量，最低只允许到 0，防止库存被写成负数
@@ -1137,6 +1862,7 @@ object KaoChangOperate {
             val cfg = AppConfig.getAppConfig()
             kaoPan.bakingTime = cfg.bakingTime * 60L * 1000L
             kaoPan.closeTime  = cfg.discardTime * 60L * 60L * 1000L
+            kaoPan.temperature = cfg.heatingTemperature
             logD(LOG_SUPPLEMENT, "补肠后刷新烤制参数：bakingTime=${cfg.bakingTime}min, discardTime=${cfg.discardTime}h → panId=${kaoPan.id}")
             logD(
                 LOG_SUPPLEMENT,
@@ -1147,7 +1873,7 @@ object KaoChangOperate {
             logE(
                 LOG_SUPPLEMENT,
                 "补肠失败，未更新烤盘状态和库存：targetPan=${kaoPan.positionSn}, sourceBox=${kaoPanBox.positionSn}, " +
-                    "result=${actionExecutionResultDesc(result)}, result2=${actionExecutionResultDesc(result2)}"
+                    "reason=联动上料事务未完成"
             )
         }
 
@@ -1181,12 +1907,12 @@ object KaoChangOperate {
      *
      * 这条链路走 202/203 寄存器，不复用 200/201 的忙态语义：
      * - 202：下发搬移动作，值为“起始烤盘 << 8 | 目标烤盘”
-     * - 203：搬移结果，0=完成，1=执行中，其余=错误，-1=上位机读失败
+     * - 203：搬移结果，0=完成，1=执行中，`0x00D1/0x00D2/0x00E1~0x00F7`=明确错误，-1=上位机读失败
      *
      * 因此这里除了写指令预检外，还要单独处理：
      * - 203 长时间停在 1 的超时
      * - 203 读失败
-     * - 203 返回非 0/1 的明确错误
+     * - 203 返回非 0/1 的明确错误，并在日志里写清中文含义
      */
     suspend fun moveKaoPanToKaoPan(
         kaoPan: KaoPan,
@@ -1226,17 +1952,21 @@ object KaoChangOperate {
         if (!writeMoveResult.isSuccess) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 指令下发失败，status=${writeMoveResult.status}")
+            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=202 指令下发失败，status=${writeMoveResult.status}")
             markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移指令下发失败：${writeMoveResult.status}")
             return false
         }
         val moveStart = System.currentTimeMillis()
-        val moveTimeoutMs = 60_000L
-        var result = 1
-        while (result == 1) {
-            delay(2000)
+        val moveTimeoutMs = TRAY_MOVE_RUNNING_TIMEOUT_MS
+        var result = TRAY_MOVE_STATUS_RUNNING
+        var previousResult: Int? = null
+        while (result == TRAY_MOVE_STATUS_RUNNING) {
+            delay(TRAY_MOVE_POLL_INTERVAL_MS)
             result = VMModbusHelper.readHoldingRegisters(modbus_address,action_address_move_result)
-            if (result == -1) {
+            val parsedResult = parseTrayMoveStatus203(result)
+            logTrayMoveStatusTransition(sourcePosition, targetPosition, previousResult, parsedResult, "running")
+            previousResult = result
+            if (parsedResult.isReadFailure) {
                 AppConfig.getAppConfig().moveStatus = 0
                 AppConfig.saveAppConfig(AppConfig.getAppConfig())
                 logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=读取 203 失败")
@@ -1244,18 +1974,31 @@ object KaoChangOperate {
                 return false
             }
             if (System.currentTimeMillis() - moveStart > moveTimeoutMs) {
-                AppConfig.getAppConfig().moveStatus = 0
-                AppConfig.saveAppConfig(AppConfig.getAppConfig())
-                logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，原因=203 长时间为 1（执行中）")
-                markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移长时间处于执行中(203=1)，设备进入维护中")
-                return false
+                logW(
+                    LOG_PAN_MOVE,
+                    "搬盘轮询超时：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203仍为${parsedResult.desc}，" +
+                        "进入恢复观察窗口 ${TRAY_MOVE_RECOVERY_GRACE_MS}ms，等待下位机回写最终故障码"
+                )
+                result = waitTrayMoveRecoveryWindow(sourcePosition, targetPosition, result)
+                break
             }
         }
-        if (result != 0) {
+        val finalResult = parseTrayMoveStatus203(result)
+        if (!finalResult.isSuccess) {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
-            logE(LOG_PAN_MOVE, "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=$result")
-            markDeviceErrorAndUpload("烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=$result，设备进入维护中")
+            val recoveredTip = if (finalResult.indicatesRecoveredAbort) {
+                "；下位机已做一次本地回零/收口，但本次搬盘逻辑仍按失败处理"
+            } else {
+                ""
+            }
+            logE(
+                LOG_PAN_MOVE,
+                "搬移失败：来源烤盘=$sourcePosition，目标烤盘=$targetPosition，203=${finalResult.desc}$recoveredTip"
+            )
+            markDeviceErrorAndUpload(
+                "烤盘${sourcePosition}到烤盘${targetPosition}搬移失败，203=${finalResult.desc}$recoveredTip，设备进入维护中"
+            )
             return false
         }
         kaoPan.cmdStatusMove=result
@@ -1265,9 +2008,14 @@ object KaoChangOperate {
             newKaoPan.taste = KaoPanHelper.copyResolvedTaste(kaoPan.taste) ?: kaoPan.taste
             newKaoPan.holdingTime= targetHoldingTime
             newKaoPan.status= 2 //kaoPan.status
+            newKaoPan.temperature = AppConfig.getAppConfig().keepWarmTemperature
             kaoPan.isHasSausage=false
+            kaoPan.isHasGrilling=false
             kaoPan.startTime = 0
+            kaoPan.holdingTime = 0
             kaoPan.status=0
+            kaoPan.taste = null
+            kaoPan.temperature = 0
 
         }
         AppConfig.getAppConfig().moveStatus = 0
@@ -1289,8 +2037,8 @@ object KaoChangOperate {
     }   
 
     /**
-     * 旧的手动取肠入口，主要给维护页手动操作使用。
-     * 这条路径不参与订单履约状态机，但故障时也会进入维护中并补齐 errorStatus。
+     * 手动取肠入口，主要给维护页手动操作使用。
+     * 当前机械卖肠段已迁到 220~227 分步协议；售卖口收尾仍沿用 207 + 视觉确认。
      */
     suspend fun takeSausage(kaoPan: KaoPan) :Boolean {
         if (!waitUntilMoveStatusIdleOrTimeout("手动取肠前等待机械动作归零")) {
@@ -1301,17 +2049,15 @@ object KaoChangOperate {
 
         val sausageName = getPanTasteLabel(kaoPan)
         CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
-        logD(LOG_ACTION, "维护操作：机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
+        logD(LOG_ACTION, "维护操作：机械卖肠链路开始，烤肠($sausageName)从烤盘${kaoPan.positionSn}经联动卖肠事务搬运到售卖口")
         try {
-            val result = executeActionWithRetry(
-                actionName = "旧手动取肠-烤盘${kaoPan.positionSn}到售卖口",
-                runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
-            ) {
-                writeSingleRegister2(action_address,kaoPan.cmdValueTake)
-            }
             var panStateCleared = false
-            if(result!=ActionExecutionResult.SUCCESS){
-                markActionFailure("旧手动取肠-烤盘${kaoPan.positionSn}到售卖口", result)
+            val deliverySuccess = executeLinkedDeliveryTransactionWithRetry(
+                targetPanPosition = kaoPan.positionSn,
+                sausageName = sausageName
+            )
+            if(!deliverySuccess){
+                markDeviceErrorAndUpload("维护手动取肠失败：烤盘${kaoPan.positionSn}联动卖肠事务未完成，设备进入维护中")
             } else {
                 // 只要烤盘到售卖口成功，这根肠就已经离开了原烤盘。
                 // 即使后续售卖口识别或关门收尾失败，也不应继续在烤盘上显示“有肠”。
@@ -1323,7 +2069,7 @@ object KaoChangOperate {
                 operateScope.launch {
                     KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
                 }
-                logD(LOG_ORDER, "旧手动取肠：烤盘${kaoPan.positionSn}已到售卖口，先清空烤盘状态，再执行售卖口收尾")
+                logD(LOG_ORDER, "手动取肠：烤盘${kaoPan.positionSn}已完成联动卖肠机械段，先清空烤盘状态，再执行售卖口收尾")
                 // 搬移完成后 等待一定时间再进行视觉检测
                 delay(3000)
                 val sausageInfo = captureSellPlatform()
@@ -1374,9 +2120,9 @@ object KaoChangOperate {
                 }
             }
 
-            kaoPan.cmdStatusTake=if (result == ActionExecutionResult.SUCCESS) 0 else 2
+            kaoPan.cmdStatusTake=if (deliverySuccess) 0 else 2
 
-            if (result==ActionExecutionResult.SUCCESS && !panStateCleared){
+            if (deliverySuccess && !panStateCleared){
                 kaoPan.isHasSausage=false
                 kaoPan.holdingTime=0L
                 kaoPan.startTime = 0
@@ -1386,7 +2132,7 @@ object KaoChangOperate {
             operateScope.launch {
                 KaoPanHelper.saveKaoPanList(KaoPanHelper.getKaoPanList())
             }
-            return result==ActionExecutionResult.SUCCESS
+            return deliverySuccess
         } finally {
             AppConfig.getAppConfig().moveStatus = 0
             AppConfig.saveAppConfig(AppConfig.getAppConfig())
@@ -1397,8 +2143,11 @@ object KaoChangOperate {
      * 正式订单出餐入口。
      *
      * 当前真实业务语义：
+     * - 机械卖肠段：220~227 分步协议
+     * - 顾客取走确认段：207 + 视觉确认
      * - 顾客取走：返回 TAKEN_BY_USER
-     * - 超时未取且系统已丢弃：返回 DISCARDED，当前订单逻辑按“本次已处理完成”推进
+     * - 超时未取且系统已丢弃：返回 DISCARDED，由订单层上报独立“已丢弃”状态并继续处理后续数量
+     * - 售卖口始终未确认到货或视觉长期不可确认：返回 DELIVERY_NOT_CONFIRMED，由订单层按失败处理
      * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
@@ -1423,15 +2172,13 @@ object KaoChangOperate {
         try {
             CameraMonitor.instance.prewarm(getCameraPrewarmHoldMs())
             val sausageName = getPanTasteLabel(kaoPan)
-            logD(LOG_ACTION, "机械臂将烤肠($sausageName)从烤盘${kaoPan.positionSn}夹取、插签、搬运到售卖口")
-            val result = executeActionWithRetry(
-                actionName = "烤盘${kaoPan.positionSn}到售卖口",
-                runningTimeoutMs = getTrayToSellPlatformTimeoutMs()
-            ) {
-                writeSingleRegister2(action_address, kaoPan.cmdValueTake)
-            }
-            if (result != ActionExecutionResult.SUCCESS) {
-                markActionFailure("烤盘${kaoPan.positionSn}到售卖口", result)
+            logD(LOG_ACTION, "机械卖肠链路开始：烤肠($sausageName)从烤盘${kaoPan.positionSn}经联动卖肠事务搬运到售卖口")
+            val deliverySuccess = executeLinkedDeliveryTransactionWithRetry(
+                targetPanPosition = kaoPan.positionSn,
+                sausageName = sausageName
+            )
+            if (!deliverySuccess) {
+                markDeviceErrorAndUpload("正式出餐失败：烤盘${kaoPan.positionSn}联动卖肠事务未完成，设备进入维护中")
                 return TakeSausageResult.ERROR
             }
             SelfCleanManager.recordUsedPanForCurrentOrder(kaoPan.positionSn)
@@ -1446,6 +2193,41 @@ object KaoChangOperate {
         }
     }
 
+    private suspend fun executeLinkedDeliveryTransactionWithRetry(
+        targetPanPosition: Int,
+        sausageName: String,
+        maxRetries: Int = LINKED_DELIVERY_MAX_RETRIES,
+        retryDelayMs: Long = LINKED_DELIVERY_RETRY_DELAY_MS
+    ): Boolean {
+        repeat(maxRetries + 1) { attempt ->
+            if (attempt > 0) {
+                logW(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠第${attempt}次重试：targetPan=$targetPanPosition，" +
+                        "等待${retryDelayMs}ms后重发指令"
+                )
+                delay(retryDelayMs)
+            }
+            val success = executeLinkedDeliveryTransaction(
+                targetPanPosition = targetPanPosition,
+                sausageName = sausageName
+            )
+            if (success) return true
+            if (attempt < maxRetries) {
+                logW(
+                    LOG_LINKED_DELIVERY,
+                    "联动卖肠第${attempt + 1}次尝试失败：targetPan=$targetPanPosition，" +
+                        "剩余重试次数=${maxRetries - attempt - 1}"
+                )
+            }
+        }
+        logE(
+            LOG_LINKED_DELIVERY,
+            "联动卖肠全部${maxRetries + 1}次尝试均失败：targetPan=$targetPanPosition"
+        )
+        return false
+    }
+
     /**
      * 过保丢弃：把烤盘中超过保温时长的烤肠丢弃。
      * 这条链路也按 201=忙时重试、通信失败/超时才判故障。
@@ -1455,6 +2237,7 @@ object KaoChangOperate {
         source: String = "过保到期",
         detail: String? = null
     ) :Boolean {
+        val shouldRegisterPit = source == "过保到期"
 
         var appState = AppConfig.getAppConfig().moveStatus
         // 运动状态 为0是说明机械臂闲置
@@ -1496,6 +2279,9 @@ object KaoChangOperate {
                 "【丢弃流程】丢弃完成：来源=$source，烤盘=${kaoPan.positionSn}，口味=$tasteLabel，详情=$sourceDetail，" +
                     "panHasSausage=${kaoPan.isHasSausage}，panStatus=${kaoPan.status}"
             )
+            if (shouldRegisterPit) {
+                KaoChangScheduler.registerFrontPitFromPan(kaoPan, "discard:$source")
+            }
         }
         AppConfig.getAppConfig().moveStatus = 0
         AppConfig.saveAppConfig(AppConfig.getAppConfig())

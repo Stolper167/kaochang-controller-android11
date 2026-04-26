@@ -10,7 +10,7 @@
         android:orientation="vertical"
         android:padding="16dp">
 
-        <!-- 动作控制区域 -->
+        <!-- 正式链路调试 -->
         <androidx.cardview.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -27,52 +27,18 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="动作控制"
+                    android:text="正式链路调试"
                     android:textSize="18sp"
                     android:textStyle="bold"
-                    android:layout_marginBottom="16dp"/>
+                    android:layout_marginBottom="8dp"/>
 
-                <!-- 执行动作组 -->
-                <LinearLayout
+                <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="执行动作组 (200)"/>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etActionGroup"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <Button
-                        android:id="@+id/btnWriteActionGroup"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-                    <Button
-                        android:id="@+id/btnReadActionGroup"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
-                </LinearLayout>
+                    android:layout_marginBottom="12dp"
+                    android:text="仅保留与正式出餐一致的运维入口。输入 101~133 表示烤盘位 1~33，执行后会走正式出餐链路，并继续售卖口视觉判断与收尾。"
+                    android:textColor="@color/status_working"
+                    android:textSize="14sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -86,268 +52,372 @@
                         android:layout_weight="1"
                         android:text="运维模拟正常售卖" />
 
-                    <TextView
+                    <com.google.android.material.textfield.TextInputLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="2"
-                        android:text="使用上方 101~133 动作号，走正式出餐+售卖口视觉链路" />
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/etFormalSellAction"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:hint="输入 101~133"
+                            android:inputType="number" />
+                    </com.google.android.material.textfield.TextInputLayout>
 
                     <Button
                         android:id="@+id/btnRunFormalSellFromAction"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
                         android:text="执行" />
                 </LinearLayout>
 
-                <!-- 动作组执行结果 -->
-                <LinearLayout
+                    <TextView
+                        android:id="@+id/tvFormalSellResult"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="未执行正式链路调试"
+                        android:textSize="14sp" />
+            </LinearLayout>
+        </androidx.cardview.widget.CardView>
+
+        <!-- 底层寄存器调试 -->
+        <androidx.cardview.widget.CardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            app:cardCornerRadius="8dp"
+            app:cardElevation="4dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="底层寄存器调试"
+                    android:textSize="18sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="8dp"/>
+
+                <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
+                    android:layout_marginBottom="12dp"
+                    android:text="高风险：以下入口直接读写 200/201/202/203/204/205 等下位机寄存器，可能绕过正式状态机，仅用于协议联调与排障。"
+                    android:textColor="@color/red"
+                    android:textSize="14sp" />
 
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="执行结果 (201)"/>
+                <Button
+                    android:id="@+id/btnToggleLegacyActionDebug"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:text="展开底层寄存器区" />
 
-                    <TextView
-                        android:id="@+id/tvActionGroupResult"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
-
-                    <Button
-                        android:id="@+id/btnReadActionGroupResult"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
-                <!-- 烤盘搬移 -->
                 <LinearLayout
+                    android:id="@+id/layoutLegacyActionDebugContent"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
-                    <TextView
-                        android:layout_width="0dp"
+                    <!-- 执行动作组 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="烤盘搬移 (202)"/>
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etStartPosition"
-                            android:layout_width="match_parent"
+                        <TextView
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:hint="起始位置"
-                            android:layout_marginLeft="5dp"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:layout_weight="1"
+                            android:text="执行动作组 (200)"/>
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etEndPosition"
-                            android:layout_width="match_parent"
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:layout_marginLeft="5dp"
-                            android:hint="结束位置"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:layout_weight="2"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
 
-                    <Button
-                        android:id="@+id/btnWriteMovePlate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/etActionGroup"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:hint="直接写入寄存器 200"
+                                android:inputType="number"/>
+                        </com.google.android.material.textfield.TextInputLayout>
 
-                    <Button
-                        android:id="@+id/btnReadMovePlate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
-                </LinearLayout>
-
-                <!-- 烤盘搬移执行结果 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="搬移结果 (203)"/>
-
-                    <TextView
-                        android:id="@+id/tvMovePlateResult"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
-
-                    <Button
-                        android:id="@+id/btnReadMovePlateResult"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
-                <!-- 开关量控制 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="开关控制 (204)"/>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etSwitchControl"
-                            android:layout_width="match_parent"
+                        <Button
+                            android:id="@+id/btnWriteActionGroup"
+                            android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:hint="16位开关状态"
-                            android:inputType="number"/>
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:layout_marginStart="8dp"
+                            android:text="写"/>
 
-                    <Button
-                        android:id="@+id/btnWriteSwitchControl"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
+                        <Button
+                            android:id="@+id/btnReadActionGroup"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="读"/>
+                    </LinearLayout>
 
-                    <Button
-                        android:id="@+id/btnReadSwitchControl"
-                        android:layout_width="wrap_content"
+                    <!-- 动作组执行结果 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="执行结果 (201)"/>
+
+                        <TextView
+                            android:id="@+id/tvActionGroupResult"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="2"
+                            android:text="未读取"/>
+
+                        <Button
+                            android:id="@+id/btnReadActionGroupResult"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="读"/>
+                    </LinearLayout>
+
+                    <!-- 烤盘搬移 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="烤盘搬移 (202)"/>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/etStartPosition"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginLeft="5dp"
+                                android:hint="起始位置"
+                                android:inputType="number"/>
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/etEndPosition"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginLeft="5dp"
+                                android:hint="结束位置"
+                                android:inputType="number"/>
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <Button
+                            android:id="@+id/btnWriteMovePlate"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="写"/>
+
+                        <Button
+                            android:id="@+id/btnReadMovePlate"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="读"/>
+                    </LinearLayout>
+
+                    <!-- 烤盘搬移执行结果 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="搬移结果 (203)"/>
+
+                        <TextView
+                            android:id="@+id/tvMovePlateResult"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="2"
+                            android:text="未读取"/>
+
+                        <Button
+                            android:id="@+id/btnReadMovePlateResult"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="读"/>
+                    </LinearLayout>
+
+                    <!-- 开关量控制 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="开关控制 (204)"/>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="2"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/etSwitchControl"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:hint="16位开关状态"
+                                android:inputType="number"/>
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <Button
+                            android:id="@+id/btnWriteSwitchControl"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="写"/>
+
+                        <Button
+                            android:id="@+id/btnReadSwitchControl"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="读"/>
+                    </LinearLayout>
+                    <!-- 开关控制6	5	4	3	2	1	0
+                        3.3V预留	12V预留	照明	冰箱	加热管2	加热管1	加热管0
+                        -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="8dp"
+                            android:text="开关状态:"/>
+
+                        <CheckBox
+                            android:id="@+id/cbHeater0"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="4dp"
+                            android:text="加热管0"/>
+
+                        <CheckBox
+                            android:id="@+id/cbHeater1"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="4dp"
+                            android:text="加热管1"/>
+
+                        <CheckBox
+                            android:id="@+id/cbHeater2"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="4dp"
+                            android:text="加热管2"/>
+
+                        <CheckBox
+                            android:id="@+id/cbFridge"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="4dp"
+                            android:text="冰箱"/>
+
+                        <CheckBox
+                            android:id="@+id/cbLight"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="4dp"
+                            android:text="照明"/>
+                        <View
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1">
+
+                        </View>
+                        <Button
+                            android:id="@+id/btnWriteSwitchControlcheck"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="写"/>
+
+
+                        <Button
+                            android:id="@+id/btnReadSwitchControlcheck"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:text="读"/>
+                    </LinearLayout>
+                    <!-- 行程开关状态 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginBottom="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="行程开关 (205)"/>
+
+                        <TextView
+                            android:id="@+id/tvLimitSwitchStatus"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="2"
+                            android:text="未读取"/>
+
+                        <Button
+                            android:id="@+id/btnReadLimitSwitchStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="读"/>
+                    </LinearLayout>
                 </LinearLayout>
-                <!-- 开关控制6	5	4	3	2	1	0
-                    3.3V预留	12V预留	照明	冰箱	加热管2	加热管1	加热管0
-                    -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="开关状态:"
-                        android:layout_marginEnd="8dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater0"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管0"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater1"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管1"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbHeater2"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="加热管2"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbFridge"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="冰箱"
-                        android:layout_marginEnd="4dp"/>
-
-                    <CheckBox
-                        android:id="@+id/cbLight"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="照明"
-                        android:layout_marginEnd="4dp"/>
-                    <View
-                        android:layout_weight="1"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content">
-
-                    </View>
-                    <Button
-                        android:id="@+id/btnWriteSwitchControlcheck"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="写"
-                        android:layout_marginStart="8dp"/>
-
-
-                    <Button
-                        android:id="@+id/btnReadSwitchControlcheck"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"
-                        android:layout_marginStart="8dp"/>
-                </LinearLayout>
-                <!-- 行程开关状态 -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:orientation="horizontal"
-                    android:layout_marginBottom="8dp">
-
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="行程开关 (205)"/>
-
-                    <TextView
-                        android:id="@+id/tvLimitSwitchStatus"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:text="未读取"/>
-
-                    <Button
-                        android:id="@+id/btnReadLimitSwitchStatus"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="读"/>
-                </LinearLayout>
-
             </LinearLayout>
         </androidx.cardview.widget.CardView>
 
@@ -368,7 +438,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="温度控制"
+                    android:text="底层寄存器调试：温度"
                     android:textSize="18sp"
                     android:textStyle="bold"
                     android:layout_marginBottom="16dp"/>
@@ -504,7 +574,7 @@
                 <TextView
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="系统信息"
+                    android:text="底层寄存器调试：版本信息"
                     android:textSize="18sp"
                     android:textStyle="bold"
                     android:layout_marginBottom="16dp"/>
@@ -582,7 +652,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginBottom="16dp"
-                    android:text="自清洁联调"
+                    android:text="功能联调：自清洁"
                     android:textSize="18sp"
                     android:textStyle="bold" />
 

@@ -29,6 +29,11 @@ class TestFragment : Fragment() {
     private val binding: FragmentTestBinding
         get() = _binding!!
 
+    // 协程内 UI 更新前统一用此属性判断 Fragment 视图是否仍然存活，
+    // 避免 onDestroyView 置空 _binding 后协程继续访问 binding 导致 NPE 崩溃。
+    private val isViewAlive: Boolean
+        get() = _binding != null && isAdded
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -45,13 +50,34 @@ class TestFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        setupLegacyActionDebugSection()
         setupActionControlListeners()
         setupSelfCleanListeners()
         setupTemperatureControlListeners()
         setupSystemInfoListeners()
     }
 
+    private fun setupLegacyActionDebugSection() {
+        setLegacyActionDebugExpanded(false)
+        binding.btnToggleLegacyActionDebug.setOnClickListener {
+            setLegacyActionDebugExpanded(binding.layoutLegacyActionDebugContent.visibility != View.VISIBLE)
+        }
+    }
+
+    private fun setLegacyActionDebugExpanded(expanded: Boolean) {
+        binding.layoutLegacyActionDebugContent.visibility = if (expanded) View.VISIBLE else View.GONE
+        binding.btnToggleLegacyActionDebug.text = if (expanded) {
+            "收起底层寄存器区"
+        } else {
+            "展开底层寄存器区"
+        }
+    }
+
     private fun setupActionControlListeners() {
+        binding.btnRunFormalSellFromAction.setOnClickListener {
+            runFormalSellFromActionInput()
+        }
+
         binding.btnReadActionGroup.setOnClickListener {
             readRegister(200, 1, "动作寄存器(200)") { value ->
                 binding.etActionGroup.setText(value[0].toString())
@@ -65,10 +91,6 @@ class TestFragment : Fragment() {
                 writeRegister(200, value.toInt(), "动作寄存器(200)")
             }
         }
-        binding.btnRunFormalSellFromAction.setOnClickListener {
-            runFormalSellFromActionInput()
-        }
-
         binding.btnReadActionGroupResult.setOnClickListener {
             readRegister(201, 1, "动作状态寄存器(201)") { value ->
                 binding.tvActionGroupResult.text = formatRegisterValue(201, value[0])
@@ -160,6 +182,7 @@ class TestFragment : Fragment() {
                 return@setOnClickListener
             }
             lifecycleScope.launch {
+                if (!isViewAlive) return@launch
                 binding.tvSelfCleanResult.text = "正在执行烤盘 ${positionSn} 自清洁..."
                 val report = withContext(Dispatchers.IO) {
                     KaoChangOperate.cleanPanPosition(
@@ -168,6 +191,7 @@ class TestFragment : Fragment() {
                         busyDuringClean = true
                     )
                 }
+                if (!isViewAlive) return@launch
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
             }
         }
@@ -180,6 +204,7 @@ class TestFragment : Fragment() {
                 return@setOnClickListener
             }
             lifecycleScope.launch {
+                if (!isViewAlive) return@launch
                 binding.tvSelfCleanResult.text = "正在执行出肠台自清洁..."
                 val report = withContext(Dispatchers.IO) {
                     KaoChangOperate.cleanSellPlatform(
@@ -187,6 +212,7 @@ class TestFragment : Fragment() {
                         busyDuringClean = true
                     )
                 }
+                if (!isViewAlive) return@launch
                 binding.tvSelfCleanResult.text = buildSelfCleanReportText(report)
             }
         }
@@ -285,12 +311,14 @@ class TestFragment : Fragment() {
                 val values = withContext(Dispatchers.IO) {
                     KaoChangOperate.readHoldingRegisters(register, quantity)
                 }
+                if (!isViewAlive) return@launch
                 if (values != null) {
                     callback.invoke(values)
                 } else {
                     showToast("读取${description}失败：返回为空")
                 }
             } catch (e: Exception) {
+                if (!isViewAlive) return@launch
                 showToast("读取${description}失败: ${e.message}")
             }
         }
@@ -330,24 +358,26 @@ class TestFragment : Fragment() {
                     writeResult = writeResult,
                     afterSnapshots = afterSnapshots
                 )
+                if (!isViewAlive) return@launch
                 if (!writeResult.isSuccess) {
                     showToast("写入${description}失败：${writeResult.message ?: writeResult.status.name}")
                 }
             } catch (e: Exception) {
+                if (!isViewAlive) return@launch
                 showToast("写入${description}失败: ${e.message}")
             }
         }
     }
 
     private fun runFormalSellFromActionInput() {
-        val commandText = binding.etActionGroup.text?.toString()?.trim().orEmpty()
+        val commandText = binding.etFormalSellAction.text?.toString()?.trim().orEmpty()
         if (commandText.isEmpty()) {
-            showToast("请先输入 101~133 的动作组值")
+            showToast("请先输入 101~133 的正式链路动作号")
             return
         }
         val command = commandText.toIntOrNull()
         if (command == null || command !in 101..133) {
-            showToast("运维模拟正常售卖仅支持 101~133（烤盘到售卖口）")
+            showToast("正式链路调试仅支持 101~133（烤盘到售卖口）")
             return
         }
         val positionSn = command - 100
@@ -361,12 +391,13 @@ class TestFragment : Fragment() {
                 showToast("当前正在自清洁，不能模拟正常售卖")
                 return@launch
             }
-            binding.tvActionGroupResult.text = "正式链路执行中：烤盘$positionSn"
+            if (!isViewAlive) return@launch
+            binding.tvFormalSellResult.text = "正式链路执行中：烤盘$positionSn"
             LogUtils.i(
                 "【测试下位机】开始运维模拟正常售卖：" +
                     "command200=${formatRegisterValue(200, command)}，pan=$positionSn，" +
                     "hasSausage=${kaoPan.isHasSausage}，status=${kaoPan.status}，" +
-                    "说明=运维联调用途，已跳过“有肠且可售”前置校验，直接调用正式出餐链路 takeSausageResult，并继续执行售卖口视觉识别与关门/丢弃收尾"
+                    "说明=运维联调用途，已跳过[有肠且可售]前置校验，直接调用正式出餐链路 takeSausageResult，并继续执行售卖口视觉识别与关门/丢弃收尾"
             )
             val takeResult = runCatching {
                 withContext(Dispatchers.IO) {
@@ -375,20 +406,26 @@ class TestFragment : Fragment() {
             }.getOrElse { error ->
                 val message = "运维模拟正常售卖异常：pan=$positionSn, error=${error.message}"
                 LogUtils.e("【测试下位机】$message", error)
-                binding.tvActionGroupResult.text = "正式链路结果：ERROR（执行异常）"
-                showToast("执行异常：${error.message}")
+                // 协程可能因导航离开而被 cancel，此时 binding 已为 null，不能访问 UI
+                if (isViewAlive) {
+                    binding.tvFormalSellResult.text = "正式链路结果：ERROR（执行异常）"
+                    showToast("执行异常：${error.message}")
+                }
                 return@launch
             }
             val resultText = when (takeResult) {
                 KaoChangOperate.TakeSausageResult.TAKEN_BY_USER -> "TAKEN_BY_USER（顾客已取走）"
                 KaoChangOperate.TakeSausageResult.DISCARDED -> "DISCARDED（超时未取，已丢弃）"
+                KaoChangOperate.TakeSausageResult.DELIVERY_NOT_CONFIRMED -> "DELIVERY_NOT_CONFIRMED（未确认到货或未确认顾客取走）"
                 KaoChangOperate.TakeSausageResult.ERROR -> "ERROR（机械/视觉/通信异常）"
             }
-            binding.tvActionGroupResult.text = "正式链路结果：$resultText"
             LogUtils.i(
                 "【测试下位机】运维模拟正常售卖结束：" +
                     "pan=$positionSn，result=$resultText"
             )
+            // IO 操作结束后 Fragment 可能已导航离开，务必再次检查
+            if (!isViewAlive) return@launch
+            binding.tvFormalSellResult.text = "正式链路结果：$resultText"
             showToast("正式链路结果：$resultText")
         }
     }

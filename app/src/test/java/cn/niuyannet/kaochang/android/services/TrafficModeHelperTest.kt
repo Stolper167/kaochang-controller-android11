@@ -47,4 +47,33 @@ class TrafficModeHelperTest {
         assertEquals(9, blankReservedPans.size)
         assertTrue(blankReservedPans.all { it.taste?.tasteCode == "A" || it.taste?.tasteCode == "B" })
     }
+
+    @Test
+    fun selectSellCandidate_shouldPreferOldestHoldingAcrossFullHighSaleArea() {
+        val pans = listOf(
+            holdingPan(positionSn = 1, holdingTime = 3_000L),
+            holdingPan(positionSn = 13, holdingTime = 1_000L),
+            holdingPan(positionSn = 18, holdingTime = 2_000L),
+            holdingPan(positionSn = 21, holdingTime = 500L),
+            holdingPan(positionSn = 25, holdingTime = 500L)
+        ).filter { it.positionSn in (1..21) }
+
+        val selected = TrafficModeHelper.selectSellCandidate(
+            list = pans,
+            tasteCode = "B",
+            productId = 101
+        )
+
+        assertEquals(21, selected?.positionSn)
+    }
+
+    private fun holdingPan(positionSn: Int, holdingTime: Long): KaoPan = KaoPan().apply {
+        setPositionSn(positionSn)
+        setHasSausage(true)
+        setHoldingTime(holdingTime)
+        setTaste(Taste().apply {
+            tasteCode = "B"
+            productId = 101
+        })
+    }
 }

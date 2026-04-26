@@ -407,15 +407,14 @@ object KaoChangAlgorithm {
      * 4. 小程序可售开关仍通过 availableCountdownLatched 控制。
      */
     private fun checkAvailable(config: AppConfigBean, kaoPanList: List<KaoPan>) {
-        val list_1_9 = TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
-        val list_1_21 = TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
-        val list_13_18 = TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
-        val list_25_33 = TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
-
-        val isLowOrTransition = config.modeType == 1 || config.transitionMode == 1
-        val sellArea = if (isLowOrTransition) list_1_9 else list_1_21
-        val heatArea = if (isLowOrTransition) list_13_18 else list_25_33
-        val trackedArea = sellArea + heatArea
+        val sellArea = getSellArea(config, kaoPanList)
+        val heatArea = TrafficModeHelper.getTrafficModePositions(
+            KaoChangScheduler.currentHeatRange(config).first,
+            KaoChangScheduler.currentHeatRange(config).last,
+            kaoPanList
+        )
+        val isLowSupplementHeat = heatArea.any { it.positionSn in 13..18 }
+        val trackedArea = (sellArea + heatArea).distinctBy { it.positionSn }
         val trackedPans = trackedArea.filter { it.isHasSausage }
         val sellableHoldingPans = sellArea.filter { isHoldingPan(it) }
         val now = System.currentTimeMillis()
@@ -433,7 +432,7 @@ object KaoChangAlgorithm {
         }
 
         val nextOpeningBatch = findNextOpeningSellBatch(
-            isLowOrTransition = isLowOrTransition,
+            isLowOrTransition = isLowSupplementHeat,
             sellArea = sellArea,
             now = now
         )
@@ -453,7 +452,7 @@ object KaoChangAlgorithm {
             return
         }
 
-        val nextSupplementBatch = buildSupplementHeatBatches(isLowOrTransition, heatArea)
+        val nextSupplementBatch = buildSupplementHeatBatches(isLowSupplementHeat, heatArea)
             .mapNotNull { batch ->
                 calcBatchRemainHeatTime(batch.pans, now)?.let { remain ->
                     batch.name to remain
@@ -482,19 +481,17 @@ object KaoChangAlgorithm {
     }
 
     private fun getSellArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (config.modeType == 1 || config.transitionMode == 1) {
-            TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList)
-        } else {
-            TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList)
-        }
+        val sellPositions = KaoChangScheduler.currentSellPositions(config).toSet()
+        return kaoPanList
+            .filter { it.positionSn in sellPositions }
+            .sortedBy { it.positionSn }
     }
 
     private fun getTrackedArea(config: AppConfigBean, kaoPanList: List<KaoPan>): List<KaoPan> {
-        return if (config.modeType == 1 || config.transitionMode == 1) {
-            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(13, 18, kaoPanList)
-        } else {
-            getSellArea(config, kaoPanList) + TrafficModeHelper.getTrafficModePositions(25, 33, kaoPanList)
-        }
+        val heatRange = KaoChangScheduler.currentHeatRange(config)
+        return (getSellArea(config, kaoPanList) +
+            TrafficModeHelper.getTrafficModePositions(heatRange.first, heatRange.last, kaoPanList))
+            .distinctBy { it.positionSn }
     }
 
     private fun evaluateSupplyRuntimeContext(
@@ -666,69 +663,42 @@ object KaoChangAlgorithm {
             return
         }
 
-        when {
-            config.transitionMode != 0 -> {
-                HighCurrentTrafficMode.highTrafficMode(
-                    config,
-                    list = kaoPanList,
-                    listBox = kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
-                    schedulingEnabled = schedulingEnabled
-                )
-            }
-
-            config.modeType == 1 -> {
-                LowCurrentTrafficMode.lowTrafficMode(
-                    config,
-                    kaoPanList,
-                    kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
-                    schedulingEnabled = schedulingEnabled
-                )
-            }
-
-            config.modeType == 2 -> {
-                HighCurrentTrafficMode.highTrafficMode(
-                    config,
-                    list = kaoPanList,
-                    listBox = kaoPanBoxList,
-                    boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
-                    schedulingEnabled = schedulingEnabled
-                )
-            }
-        }
+        KaoChangScheduler.runCycle(
+            config = config,
+            pans = kaoPanList,
+            boxes = kaoPanBoxList,
+            boxSupplyAvailable = supplyContext.hasSupplyBoxesAvailable,
+            schedulingEnabled = schedulingEnabled
+        )
     }
 
     /**
      * 用户下单后，从可售烤盘中选择一根烤肠出餐。
      * 当前策略：
-     * 1. 低并发及低转高过渡态仅从 1~9 号前区选取；
-     * 2. 高并发从 1~21 号可售区选取；
+     * 1. 可售区由调度器按并发模式决定：低并发为 1~9 + 13~18，高并发/过渡态为 1~21；
+     * 2. 25~33 只作为补热回填区，不直接出餐；
      * 3. 按 holdingTime 最小值优先，即“最早进入保温的先卖”。
      */
     suspend fun purchase(tasteCode: String, productId: Int): KaoChangOperate.TakeSausageResult {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val config = AppConfig.getAppConfig()
-        val targetKaoPan: KaoPan? = if (config.modeType == 1 || config.transitionMode == 1) {
-            TrafficModeHelper.selectSellCandidate(
-                TrafficModeHelper.getTrafficModePositions(1, 9, kaoPanList),
-                tasteCode,
-                productId
-            )
-        } else {
-            TrafficModeHelper.selectSellCandidate(
-                TrafficModeHelper.getTrafficModePositions(1, 21, kaoPanList),
-                tasteCode,
-                productId
-            )
-        }
+        val sellPositions = KaoChangScheduler.currentSellPositions(config).toSet()
+        val targetKaoPan: KaoPan? = TrafficModeHelper.selectSellCandidate(
+            kaoPanList.filter { it.positionSn in sellPositions }.sortedBy { it.positionSn },
+            tasteCode,
+            productId
+        )
 
         if (targetKaoPan != null) {
             logD(
                 LOG_ALGORITHM,
                 "收到出货订单：口味=$tasteCode，商品=$productId，已调度托盘 ID=${targetKaoPan.id}，烤盘位=${targetKaoPan.positionSn}，holdingTime=${targetKaoPan.holdingTime}"
             )
-            return KaoChangOperate.takeSausageResult(targetKaoPan)
+            val result = KaoChangOperate.takeSausageResult(targetKaoPan)
+            if (result != KaoChangOperate.TakeSausageResult.ERROR) {
+                KaoChangScheduler.registerFrontPitFromPan(targetKaoPan, "purchase:$result")
+            }
+            return result
         } else {
             logW(LOG_DEVICE, "收到出货订单失败：当前没有找到可售烤肠 [口味=$tasteCode, 商品=$productId]")
         }
@@ -752,6 +722,7 @@ object KaoChangAlgorithm {
                 detail = "维护页批量重置烤盘"
             )
         }
+        KaoChangScheduler.clearSnapshot("管理员重置烤盘")
     }
 
     /**

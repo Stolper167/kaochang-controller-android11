@@ -56,69 +56,95 @@ object KaoPanHelper {
     private var kaoPanBoxList = mutableListOf<KaoPanBox>()
 
     /**
+     * 构建默认 33 个烤盘配置。
+     *
+     * 用于首次安装、清缓存后重启，或本地烤盘缓存损坏/缺失时的兜底自愈。
+     */
+    private fun buildDefaultKaoPanList(): MutableList<KaoPan> {
+        return mutableListOf<KaoPan>().apply {
+            val positions = mutableListOf<Int>()
+            for (i in 1..31 step 3) {
+                positions.add(i)
+            }
+
+            for (i in 2..32 step 3) {
+                positions.add(i)
+            }
+
+            for (i in 3..33 step 3) {
+                positions.add(i)
+            }
+
+            for (i in 0 until 33) {
+                val positionSn = positions[i]
+                val region = when (positionSn) {
+                    in 1..9 -> 1
+                    in 10..12 -> 4
+                    in 13..21 -> 2
+                    in 22..24 -> 4
+                    else -> 3
+                }
+                val cmdValueMove = positionSn
+                val cmdValueTake = positionSn + 100
+                val cmdValueDiscard = positionSn + 300
+                val config = getAppConfig()
+                val bakingTimeMinutes = config.bakingTime
+                val discardTimeHours = config.discardTime
+
+                val kaoPan = KaoPan()
+                kaoPan.id = i
+                kaoPan.positionSn = positionSn
+                kaoPan.positionRegion = region
+                kaoPan.startTime = 0L
+                kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
+                kaoPan.holdingTime = holdingTime
+                kaoPan.closeTime = discardTimeHours * 60L * 60L * 1000L
+                kaoPan.taste = null
+                kaoPan.temperature = 0
+                kaoPan.status = 0
+                kaoPan.isHasSausage = false
+                kaoPan.isHasGrilling = false
+                kaoPan.cmdValueMove = cmdValueMove
+                kaoPan.cmdValueTake = cmdValueTake
+                kaoPan.cmdStatusMove = 0
+                kaoPan.cmdStatusTake = 0
+                kaoPan.cmdValueDiscard = cmdValueDiscard
+                kaoPan.cmdStatusDiscard = 0
+                add(kaoPan)
+            }
+        }
+    }
+
+    /**
+     * 确保烤盘列表已加载。
+     *
+     * `PreferenceUtils.getListPreference()` 在本地没有值时会返回 `null`，
+     * 启动阶段若直接 `.toMutableList()` 会导致 NPE。这里统一做空保护和默认自愈。
+     */
+    private fun ensureKaoPanListLoaded(): MutableList<KaoPan> {
+        if (kaoPanList.isNotEmpty()) {
+            return kaoPanList
+        }
+
+        val savedKaoPanList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java)
+        if (!savedKaoPanList.isNullOrEmpty()) {
+            kaoPanList = savedKaoPanList.toMutableList()
+            return kaoPanList
+        }
+
+        kaoPanList = buildDefaultKaoPanList()
+        PreferenceUtils.saveListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, kaoPanList)
+        LogUtils.w("【烤盘缓存】本地烤盘列表为空，已自动重建默认 33 个烤盘配置")
+        return kaoPanList
+    }
+
+    /**
      * 初始化烤盘配置。
      *
      * 优先读取本地缓存；若本地还没有保存过，则按默认工位顺序生成 33 个烤盘并立即落盘。
      */
     fun init() {
-        val savedKaoPanList = PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java)
-        if (!savedKaoPanList.isNullOrEmpty()) {
-            kaoPanList = savedKaoPanList.toMutableList()
-        } else {
-            kaoPanList = mutableListOf<KaoPan>().apply {
-                val positions = mutableListOf<Int>()
-                for (i in 1..31 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 2..32 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 3..33 step 3) {
-                    positions.add(i)
-                }
-
-                for (i in 0 until 33) {
-                    val positionSn = positions[i]
-                    val region = when (positionSn) {
-                        in 1..9 -> 1
-                        in 10..12 -> 4
-                        in 13..21 -> 2
-                        in 22..24 -> 4
-                        else -> 3
-                    }
-                    val cmdValueMove = positionSn
-                    val cmdValueTake = positionSn + 100
-                    val cmdValueDiscard = positionSn + 300
-                    val config = getAppConfig()
-                    val bakingTimeMinutes = config.bakingTime
-                    val discardTimeHours = config.discardTime
-
-                    val kaoPan = KaoPan()
-                    kaoPan.id = i
-                    kaoPan.positionSn = positionSn
-                    kaoPan.positionRegion = region
-                    kaoPan.startTime = 0L
-                    kaoPan.bakingTime = bakingTimeMinutes * 60L * 1000L
-                    kaoPan.holdingTime = holdingTime
-                    kaoPan.closeTime = discardTimeHours * 60L * 60L * 1000L
-                    kaoPan.taste = null
-                    kaoPan.temperature = 0
-                    kaoPan.status = 0
-                    kaoPan.isHasSausage = false
-                    kaoPan.isHasGrilling = false
-                    kaoPan.cmdValueMove = cmdValueMove
-                    kaoPan.cmdValueTake = cmdValueTake
-                    kaoPan.cmdStatusMove = 0
-                    kaoPan.cmdStatusTake = 0
-                    kaoPan.cmdValueDiscard = cmdValueDiscard
-                    kaoPan.cmdStatusDiscard = 0
-                    add(kaoPan)
-                }
-            }
-            saveKaoPanList(kaoPanList)
-        }
+        ensureKaoPanListLoaded()
     }
     /**
      * 重置烤盘
@@ -149,11 +175,7 @@ object KaoPanHelper {
      * 获取烤盘列表
      */
     fun getKaoPanList():List<KaoPan>{
-        if (kaoPanList.size>0){
-            return kaoPanList
-        }
-        this.kaoPanList= PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_LIST, KaoPan::class.java).toMutableList()
-        return kaoPanList
+        return ensureKaoPanListLoaded()
     }
 
     /**
@@ -163,7 +185,9 @@ object KaoPanHelper {
         if (this.kaoPanBoxList.size>0){
             return this.kaoPanBoxList
         }
-        this.kaoPanBoxList=  PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, KaoPanBox::class.java).toMutableList()
+        this.kaoPanBoxList =
+            (PreferenceUtils.getListPreference(FILE_SP_URL, KEY_KAO_PAN_BOX_LIST, KaoPanBox::class.java)
+                ?: emptyList()).toMutableList()
         return this.kaoPanBoxList
     }
     /**
@@ -173,7 +197,9 @@ object KaoPanHelper {
         if (tasteList.size>0){
             return tasteList
         }
-        tasteList= PreferenceUtils.getListPreference(FILE_SP_URL, KEY_TASTE_LIST, Taste::class.java).toMutableList()
+        tasteList =
+            (PreferenceUtils.getListPreference(FILE_SP_URL, KEY_TASTE_LIST, Taste::class.java)
+                ?: emptyList()).toMutableList()
         return tasteList;
     }
     /**
@@ -400,6 +426,9 @@ object KaoPanHelper {
      */
     fun clearAllData() {
         PreferenceUtils.deletePreference(FILE_SP_URL)
+        kaoPanList.clear()
+        kaoPanBoxList.clear()
+        tasteList.clear()
     }
 
     /**
@@ -407,6 +436,7 @@ object KaoPanHelper {
      */
     fun clearKaoPan() {
         PreferenceUtils.deletePreference(FILE_SP_URL,KEY_KAO_PAN_LIST)
+        kaoPanList.clear()
     }
 
     /**

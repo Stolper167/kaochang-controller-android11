@@ -11,16 +11,27 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="烤肠检测"
+        android:gravity="center"
+        android:text="烤肠视觉调试"
         android:textSize="24sp"
         android:textStyle="bold"
-        android:gravity="center"
-        android:layout_marginBottom="16dp" />
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:id="@+id/status_text_view"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#E3F2FD"
+        android:padding="12dp"
+        android:text="相机服务状态：未初始化"
+        android:textColor="@color/blue_700"
+        android:textSize="14sp" />
 
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
+        android:layout_marginTop="12dp"
         android:background="#EEEEEE">
 
         <androidx.camera.view.PreviewView
@@ -40,8 +51,8 @@
 
     <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="100dp"
-        android:layout_marginTop="16dp"
+        android:layout_height="140dp"
+        android:layout_marginTop="12dp"
         android:background="#F5F5F5">
 
         <TextView
@@ -53,26 +64,28 @@
             android:text="检测结果将显示在这里" />
 
     </ScrollView>
+
     <Button
         android:id="@+id/arUco_button"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="arUco检测"
+        android:layout_marginTop="12dp"
+        android:text="ArUco 标定检测"
         android:textSize="16sp" />
+
     <Button
         android:id="@+id/detect_button"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="开始检测"
+        android:layout_marginTop="12dp"
+        android:text="烤肠检测"
         android:textSize="16sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
+        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
 
         <Button
             android:id="@+id/transport_button"
@@ -94,13 +107,37 @@
 
     </LinearLayout>
 
-    <ImageView
-        android:id="@+id/btn_back"
-        android:layout_width="48dp"
-        android:background="@color/blue_500"
-        android:layout_height="48dp"
-        android:padding="12dp"
-        android:src="@drawable/ic_back"
-        app:tint="@color/white" />
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btn_reset_view"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="返回待拍照" />
+
+        <Button
+            android:id="@+id/btn_rebind_camera"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="重绑相机" />
+
+        <ImageView
+            android:id="@+id/btn_back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:background="@color/blue_500"
+            android:padding="12dp"
+            android:src="@drawable/ic_back"
+            app:tint="@color/white" />
+    </LinearLayout>
 
 </LinearLayout>

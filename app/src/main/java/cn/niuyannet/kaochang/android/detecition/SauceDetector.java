@@ -23,9 +23,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import cn.niuyannet.kaochang.android.MyApp;
-import cn.niuyannet.kaochang.android.utils.LogUtils;
-
 /**
  * 烤肠检测工具类
  * 将Python的sauce_detect.py翻译成Java代码
@@ -95,6 +92,18 @@ public class SauceDetector {
             "sales_platform_relaxed"
     );
 
+    public static final DetectionTuning SALES_PLATFORM_FALLBACK_TUNING = new DetectionTuning(
+            3,
+            1,
+            1,
+            90,
+            16000,
+            0.08,
+            6.0,
+            0,
+            "sales_platform_fallback"
+    );
+
     static {
         // 初始化OpenCV库
         if (!OpenCVLoader.initDebug()) {
@@ -143,7 +152,7 @@ public class SauceDetector {
             out.flush();
             out.close();
             
-            LogUtils.INSTANCE.i("【视觉调试】保存调试图像：name=" + actualFileName + "，path=" + file.getAbsolutePath());
+            Log.i(TAG, "【视觉调试】保存调试图像：name=" + actualFileName + "，path=" + file.getAbsolutePath());
             
             // 释放资源
             if (matToSave != mat) {
@@ -151,7 +160,7 @@ public class SauceDetector {
             }
             bitmap.recycle();
         } catch (Exception e) {
-            LogUtils.INSTANCE.e("【视觉调试】保存调试图像失败：" + e.getMessage(), e);
+            Log.e(TAG, "【视觉调试】保存调试图像失败：" + e.getMessage(), e);
         }
     }
 
@@ -160,7 +169,7 @@ public class SauceDetector {
     }
 
     private static File getDebugImageDir() {
-        return new File(MyApp.Companion.instance().getCacheDir(), DEBUG_IMAGE_DIR_NAME);
+        return new File(com.blankj.utilcode.util.Utils.getApp().getCacheDir(), DEBUG_IMAGE_DIR_NAME);
     }
 
     /**

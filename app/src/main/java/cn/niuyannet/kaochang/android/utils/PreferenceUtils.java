@@ -10,6 +10,7 @@ import android.util.Base64;
 import androidx.annotation.Nullable;
 
 import com.alibaba.fastjson.JSON;
+import com.blankj.utilcode.util.Utils;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -20,10 +21,11 @@ import java.io.Serializable;
 import java.io.StreamCorruptedException;
 import java.util.List;
 
-import cn.niuyannet.kaochang.android.MyApp;
-
-
 public class PreferenceUtils {
+    private static SharedPreferences getSharedPreferences(String file) {
+        return Utils.getApp().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+    }
+
     /**
      * 保存Boolean类型至SharedPreferences
      *
@@ -32,7 +34,7 @@ public class PreferenceUtils {
      * @param value value
      */
     public static void saveBooleanPreference(String file, String key, boolean value) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.putBoolean(key, value);
         mEditor.apply();
@@ -47,7 +49,7 @@ public class PreferenceUtils {
      * @return the int
      */
     public static boolean getBooleanPreference(String file, String key, boolean defaultBoolean) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         return sp.getBoolean(key, defaultBoolean);
     }
 
@@ -60,7 +62,7 @@ public class PreferenceUtils {
      * @param value value
      */
     public static void saveIntPreference(String file, String key, int value) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.putInt(key, value);
         mEditor.apply();
@@ -75,7 +77,7 @@ public class PreferenceUtils {
      * @param value value
      */
     public static void saveLongPreference(String file, String key, long value) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.putLong(key, value);
         mEditor.apply();
@@ -90,7 +92,7 @@ public class PreferenceUtils {
      * @return the int
      */
     public static float getFloatPreference(String file, String key, float defaultFloat) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         return sp.getFloat(key, defaultFloat);
     }
 
@@ -102,7 +104,7 @@ public class PreferenceUtils {
      * @param value value
      */
     public static void saveFloatPreference(String file, String key, float value) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.putFloat(key, value);
         mEditor.apply();
@@ -117,7 +119,7 @@ public class PreferenceUtils {
      * @return the int
      */
     public static int getIntPreference(String file, String key, int defaultInt) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         int value = sp.getInt(key, defaultInt);
         return value;
     }
@@ -131,7 +133,7 @@ public class PreferenceUtils {
      * @return the int
      */
     public static long getLongPreference(String file, String key, long defaultLong) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         long value = sp.getLong(key, defaultLong);
         return value;
     }
@@ -144,7 +146,7 @@ public class PreferenceUtils {
      * @param value the value
      */
     public static void saveStringPreference(String file, String key, String value) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.putString(key, value);
         mEditor.apply();
@@ -159,7 +161,7 @@ public class PreferenceUtils {
      * @return the string
      */
     public static String getStringPreference(String file, String key, String defaultString) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         String value = sp.getString(key, defaultString);
         return value;
     }
@@ -205,7 +207,7 @@ public class PreferenceUtils {
         try {
             if (obj instanceof Serializable) {
                 // 保存对象
-                SharedPreferences.Editor sharedata = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE).edit();
+                SharedPreferences.Editor sharedata = getSharedPreferences(file).edit();
                 //先将序列化结果写到byte缓存中，其实就分配一个内存空间
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 ObjectOutputStream os = new ObjectOutputStream(bos);
@@ -236,7 +238,7 @@ public class PreferenceUtils {
     @Nullable
     public static <T> T getObjectPreference(String file, String key) {
         try {
-            SharedPreferences sharedata = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+            SharedPreferences sharedata = getSharedPreferences(file);
             if (sharedata.contains(key)) {
                 String string = sharedata.getString(key, "");
                 if (TextUtils.isEmpty(string)) {
@@ -276,7 +278,7 @@ public class PreferenceUtils {
         try {
             if (obj instanceof Serializable) {
                 // 保存对象
-                SharedPreferences.Editor sharedata = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE).edit();
+                SharedPreferences.Editor sharedata = getSharedPreferences(file).edit();
                 //先将序列化结果写到byte缓存中，其实就分配一个内存空间
                 ByteArrayOutputStream bos = new ByteArrayOutputStream();
                 ObjectOutputStream os = new ObjectOutputStream(bos);
@@ -306,7 +308,7 @@ public class PreferenceUtils {
      */
     public static Object getObjectBase64Preference(String file, String key) {
         try {
-            SharedPreferences sharedata = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+            SharedPreferences sharedata = getSharedPreferences(file);
             if (sharedata.contains(key)) {
                 String string = sharedata.getString(key, "");
                 if (TextUtils.isEmpty(string)) {
@@ -339,7 +341,7 @@ public class PreferenceUtils {
      * @param file the file
      */
     public static void deletePreference(String file) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.clear();
         mEditor.apply();
@@ -352,7 +354,7 @@ public class PreferenceUtils {
      * @param key  the key
      */
     public static void deletePreference(String file, String key) {
-        SharedPreferences sp = MyApp.Companion.instance().getApplicationContext().getSharedPreferences(file, MODE_PRIVATE);
+        SharedPreferences sp = getSharedPreferences(file);
         SharedPreferences.Editor mEditor = sp.edit();
         mEditor.remove(key);
         mEditor.apply();
@@ -423,4 +425,3 @@ public class PreferenceUtils {
 
 
 }
-

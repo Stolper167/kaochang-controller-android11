@@ -367,6 +367,16 @@ public class SauceDetectionProcessor {
                 "sales_platform",
                 SauceDetector.SALES_PLATFORM_TUNING
         );
+        if (result.sausages.isEmpty()) {
+            Log.w(TAG, "售卖台主检测未命中，改用更宽松调参做二次复核");
+            result = SauceDetector.detectSausageCentroid(
+                    workPlace,
+                    lower,
+                    upper,
+                    "sales_platform_fallback",
+                    SauceDetector.SALES_PLATFORM_FALLBACK_TUNING
+            );
+        }
 
         // 处理检测结果
         DetectionResult detectionResult = new DetectionResult();
@@ -508,12 +518,14 @@ public class SauceDetectionProcessor {
                     roi1.setTo(new Scalar(1, 1, 1)); // 三通道掩码，所有通道都设为1
                 }
                 
-                // 计算售卖台ROI区域 - 与Python代码保持一致
-                // kaopan_Roi_mask_2[0: int(corners[3][1] - 1.5 * 25), int(corners[3][0] - 2 - 5 * 25): int(corners[3][0] - 4 - 3 * 25)] = 1
+                // 计算售卖台ROI区域。
+                // 现场图像显示售卖口烤肠经常只在左上区域露出一小截，原来的 ROI 过窄，
+                // 很容易出现“某一帧刚好拍到、下一帧又掉出 ROI”的情况。
+                // 这里在原始 Python 口径基础上，适度向上/向右/向下放宽一点，优先保证到货确认稳定。
                 int h2Start = 0;
-                int h2End = (int)(cornerY - 1.6 * markerSizeH);
-                int w2Start = (int)(cornerX - 2 - 4 * markerSizeW);
-                int w2End = (int)(cornerX - 4 - 2.7 * markerSizeW);
+                int h2End = (int)(cornerY - 0.8 * markerSizeH);
+                int w2Start = (int)(cornerX - 2 - 4.8 * markerSizeW);
+                int w2End = (int)(cornerX - 4 - 1.5 * markerSizeW);
                 
                 // 确保坐标在有效范围内
                 h2Start = Math.max(0, h2Start);

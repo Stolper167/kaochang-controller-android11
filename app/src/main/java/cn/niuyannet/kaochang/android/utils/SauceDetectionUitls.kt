@@ -39,6 +39,7 @@ import kotlin.coroutines.resume
  */
 object SauceDetectionUitls {
     private const val DETECT_LOG_WINDOW_MS = 10_000L
+    private val usbSerialPrefixes = listOf("/dev/ttyUSB", "/dev/ttyACM", "/dev/ttyCH343USB")
     private val recentDetectWarnAtMs = ConcurrentHashMap<String, Long>()
 
     private fun logDetectWarnThrottled(key: String, message: String) {
@@ -70,6 +71,25 @@ object SauceDetectionUitls {
         ConcurrentHashMap<String, CompletableDeferred<SauceDetectionProcessor.SausageInfo?>>()
     private var forcedSellDetectCount = 0
     private var forcedSellDetectWindowStartMs = 0L
+
+    private fun resolveForcedVisionReason(roiFlag: Int): String? {
+        val config = AppConfig.getAppConfig()
+        if (config.forceVisionSuccess == 1) {
+            return "forceVisionSuccess=1"
+        }
+        if (roiFlag != 1) {
+            return null
+        }
+        val modbusAddress = config.modbusAddress?.trim().orEmpty()
+        val isUsbLinkedSimulator = usbSerialPrefixes.any { prefix ->
+            modbusAddress.startsWith(prefix, ignoreCase = true)
+        }
+        return if (isUsbLinkedSimulator) {
+            "auto_usb_linkage(modbusAddress=$modbusAddress)"
+        } else {
+            null
+        }
+    }
 
     private fun buildForcedSuccessResult(roiFlag: Int): SauceDetectionProcessor.SausageInfo {
         return SauceDetectionProcessor.SausageInfo().apply {
@@ -108,11 +128,12 @@ object SauceDetectionUitls {
         captureTimeoutMs: Long = 5000L,
         tag: String = "KaoChangAlgorithm"
     ): SauceDetectionProcessor.SausageInfo? = withContext(Dispatchers.IO) {
-        if (AppConfig.getAppConfig().forceVisionSuccess == 1) {
+        val forcedVisionReason = resolveForcedVisionReason(roiFlag)
+        if (forcedVisionReason != null) {
             if (roiFlag == 0) {
                 logDetectWarnThrottled(
                     "force_transport_success",
-                    "联调模式已开启，运输台视觉识别固定返回成功：roiFlag=$roiFlag, forceVisionSuccess=1"
+                    "联调模式已开启，运输台视觉识别固定返回成功：roiFlag=$roiFlag, reason=$forcedVisionReason"
                 )
                 return@withContext buildForcedSuccessResult(roiFlag)
             }
@@ -126,15 +147,15 @@ object SauceDetectionUitls {
 
             if (forcedSellDetectCount <= 2) {
                 logDetectWarnThrottled(
-                    "force_sell_detected",
-                    "联调模式已开启，售卖口视觉识别模拟为“检测到烤肠”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount"
+                    "force_sell_detected_$forcedVisionReason",
+                    "联调模式已开启，售卖口视觉识别模拟为“检测到烤肠”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount, reason=$forcedVisionReason"
                 )
                 return@withContext buildForcedSuccessResult(roiFlag)
             }
 
             logDetectWarnThrottled(
-                "force_sell_empty",
-                "联调模式已开启，售卖口视觉识别模拟为“顾客已取走，窗口为空”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount"
+                "force_sell_empty_$forcedVisionReason",
+                "联调模式已开启，售卖口视觉识别模拟为“顾客已取走，窗口为空”：roiFlag=$roiFlag, countInWindow=$forcedSellDetectCount, reason=$forcedVisionReason"
             )
             return@withContext buildForcedSellEmptyResult()
         }

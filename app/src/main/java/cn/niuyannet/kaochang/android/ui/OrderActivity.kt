@@ -15,6 +15,7 @@ import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.services.KaoChangOperate
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.afollestad.materialdialogs.MaterialDialog
 import com.afollestad.materialdialogs.customview.customView
@@ -333,7 +334,11 @@ abstract class OrderActivity: BaseSauceDetection() {
             )
             val currentMoveStatus = AppConfig.getAppConfig().moveStatus
             if (currentMoveStatus != 2) {
-                LogUtils.w("【订单流转】终止当前出餐：设备动作状态不是取肠中（moveStatus!=2），orderNo=$orderNo, itemId=${item.id}")
+                LogUtils.w(
+                    "【订单流转】终止当前出餐：机械动作状态不满足出餐条件，" +
+                        "moveStatus（机械动作状态）=${DeviceStateText.moveStatus(currentMoveStatus)}，期望=2（夹取/出餐中），" +
+                        "orderNo=$orderNo, itemId=${item.id}"
+                )
                 return DeliveryResult(
                     success = false,
                     completedCount = completedCount,
@@ -353,7 +358,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                         completedCount++
                         takenCount++
                         LogUtils.d(
-                            "【履约完结】视觉判定顾客已取走，已上报 Java 订单事件(status=2)：orderNo=$orderNo, " +
+                            "【履约完结】视觉判定顾客已取走，已上报 Java 订单事件：" +
+                                "status（订单事件状态）=${orderEventStatusText(ORDER_EVENT_STATUS_TAKEN)}，orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount}/$totalCount"
                         )
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_TAKEN)
@@ -363,7 +369,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                         completedCount++
                         discardedCount++
                         LogUtils.w(
-                            "【履约完结】烤肠已超时丢弃，已上报独立订单事件(status=3)并继续后续数量：orderNo=$orderNo, " +
+                            "【履约完结】烤肠已超时丢弃，已上报独立订单事件并继续后续数量：" +
+                                "status（订单事件状态）=${orderEventStatusText(ORDER_EVENT_STATUS_DISCARDED_BY_TIMEOUT)}，orderNo=$orderNo, " +
                                 "itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount}/$totalCount"
                         )
                         reportOrderEvent(
@@ -382,7 +389,8 @@ abstract class OrderActivity: BaseSauceDetection() {
                     KaoChangOperate.TakeSausageResult.DELIVERY_NOT_CONFIRMED -> {
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
                         LogUtils.e(
-                            "【订单流转】售卖口未确认到货或未确认顾客取走，本次履约按失败处理并上报 Java 订单事件(status=5)：" +
+                            "【订单流转】售卖口未确认到货或未确认顾客取走，本次履约按失败处理并上报 Java 订单事件：" +
+                                "status（订单事件状态）=${orderEventStatusText(ORDER_EVENT_STATUS_FAILED)}，" +
                                 "orderNo=$orderNo, itemId=${item.id}, productId=${item.productId}, tasteCode=${item.tasteCode}, current=${completedBase + completedCount + 1}/$totalCount"
                         )
                         throw IllegalStateException("单根出餐未确认送达：orderNo=$orderNo, itemId=${item.id}")
@@ -390,7 +398,10 @@ abstract class OrderActivity: BaseSauceDetection() {
 
                     KaoChangOperate.TakeSausageResult.ERROR -> {
                         reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
-                        LogUtils.e("【订单流转】单根出餐失败，已上报 Java 订单事件 status=5：orderNo=$orderNo, itemId=${item.id}")
+                        LogUtils.e(
+                            "【订单流转】单根出餐失败，已上报 Java 订单事件：" +
+                                "status（订单事件状态）=${orderEventStatusText(ORDER_EVENT_STATUS_FAILED)}，orderNo=$orderNo, itemId=${item.id}"
+                        )
                         throw IllegalStateException("单根出餐失败：orderNo=$orderNo, itemId=${item.id}")
                     }
                 }
@@ -414,7 +425,11 @@ abstract class OrderActivity: BaseSauceDetection() {
 
         if (completedCount < item.quantity) {
             LogUtils.e("【订单流转】商品项未全部履约完成：orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
-            LogUtils.e("【订单流转】商品项履约失败，已上报订单事件 status=5：orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts")
+            LogUtils.e(
+                "【订单流转】商品项履约失败，已上报订单事件：" +
+                    "status（订单事件状态）=${orderEventStatusText(ORDER_EVENT_STATUS_FAILED)}，" +
+                    "orderNo=$orderNo, itemId=${item.id}, completedCount=$completedCount/${item.quantity}, attemptCount=$attemptCount/$maxAttempts"
+            )
             reportOrderEvent(orderNo, item.id, item.productId, item.tasteCode, ORDER_EVENT_STATUS_FAILED)
             return DeliveryResult(
                 success = false,

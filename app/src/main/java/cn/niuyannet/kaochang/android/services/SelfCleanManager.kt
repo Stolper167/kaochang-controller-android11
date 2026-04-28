@@ -4,6 +4,7 @@ import cn.niuyannet.kaochang.android.init.AppConfig
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 
@@ -129,8 +130,10 @@ object SelfCleanManager {
         publishRuntimeState("zone3_self_clean:start")
         HomeUiRefreshBridge.requestRefresh("zone3_self_clean:start")
         logI(
-            "开始执行三区批量自清洁 | range=25~33，onlineStatus（设备营业状态）=$previousOnlineStatus->${config.onlineStatus}，" +
-                "moveStatus（机械动作状态）=${config.moveStatus}，zone3Dirty=${config.zone3Dirty}，zone3CleanPending=${config.zone3CleanPending}"
+            "开始执行三区批量自清洁 | range=25~33，" +
+                "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(previousOnlineStatus)}->${DeviceStateText.onlineStatus(config.onlineStatus)}，" +
+                "moveStatus（机械动作状态）=${DeviceStateText.moveStatus(config.moveStatus)}，" +
+                "zone3Dirty=${config.zone3Dirty}，zone3CleanPending=${config.zone3CleanPending}"
         )
 
         val result = KaoChangOperate.runPanSelfCleanSequence(
@@ -155,7 +158,7 @@ object SelfCleanManager {
         publishRuntimeState("zone3_self_clean:finished")
         HomeUiRefreshBridge.requestRefresh("zone3_self_clean:finished")
         logI(
-            "三区批量自清洁完成 | range=25~33，onlineStatus（设备营业状态）=${latestConfig.onlineStatus}，" +
+            "三区批量自清洁完成 | range=25~33，onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(latestConfig.onlineStatus)}，" +
                 "zone3Dirty=false，zone3CleanPending=false"
         )
         return true

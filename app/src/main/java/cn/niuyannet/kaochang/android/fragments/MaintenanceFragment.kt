@@ -845,9 +845,11 @@ class MaintenanceFragment : Fragment() {
                     resetPanCooldownJob = null
                     return@launch
                 }
-                KaoChangAlgorithm.resetKaoPan { current, total, _ ->
-                    binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
-                }
+                KaoChangAlgorithm.resetKaoPan(
+                    progressCallback = { current, total, _ ->
+                        binding.tvCooldownHint.text = "正在丢弃烤肠（当前第 $current 根 / 共 $total 根）"
+                    }
+                )
                 KaoPanHelper.clearKaoPan()
                 KaoPanHelper.init()
                 clearRuntimeStateAfterManualPanReset("点击丢弃所有烤肠并重置烤盘")

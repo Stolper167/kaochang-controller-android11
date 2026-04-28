@@ -3,6 +3,7 @@
 import android.os.Handler
 import android.os.Looper
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
@@ -54,6 +55,26 @@ object VMMqttHelper : VMMqtt() {
         return shouldLog
     }
 
+    private fun runtimeAckStateText(
+        status: Int,
+        onlineStatus: Int,
+        supplyStatus: Int,
+        isEnable: Int,
+        modeType: Int,
+        transitionMode: Int,
+        moveStatus: Int,
+        errorStatus: Int
+    ): String {
+        return "status（设备启用状态）=${DeviceStateText.serviceStatus(status)}，" +
+            "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(onlineStatus)}，" +
+            "supplyStatus（补货状态）=$supplyStatus，" +
+            "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(isEnable)}，" +
+            "modeType（并发模式）=${DeviceStateText.modeType(modeType)}，" +
+            "transitionMode（并发切换过渡态）=${DeviceStateText.transitionMode(transitionMode)}，" +
+            "moveStatus（机械动作状态）=${DeviceStateText.moveStatus(moveStatus)}，" +
+            "errorStatus（设备故障状态）=${DeviceStateText.errorStatus(errorStatus)}"
+    }
+
     private val messageListeners = ConcurrentHashMap<String, (TopicMessage) -> Unit>()
 
     private fun consumeRuntimeStateAckIfNeeded(topicMessage: TopicMessage): Boolean {
@@ -86,18 +107,34 @@ object VMMqttHelper : VMMqtt() {
             LogUtils.d(
                 "【MQTT运行态】服务端已确认运行时状态：" +
                     "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "status=$status，onlineStatus=$onlineStatus，supplyStatus=$supplyStatus，isEnable=$isEnable，" +
-                    "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
-                    "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    runtimeAckStateText(
+                        status = status,
+                        onlineStatus = onlineStatus,
+                        supplyStatus = supplyStatus,
+                        isEnable = isEnable,
+                        modeType = modeType,
+                        transitionMode = transitionMode,
+                        moveStatus = moveStatus,
+                        errorStatus = errorStatus
+                    ) +
+                    "，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
                     "source=${ackResult.snapshot?.source ?: "unknown"}"
             )
         } else {
             LogUtils.w(
                 "【MQTT运行态】服务端未应用运行时状态：" +
                     "runtimeSeq=$runtimeSeq，freshAck=${ackResult.freshAck}，reason=$reason，" +
-                    "status=$status，onlineStatus=$onlineStatus，supplyStatus=$supplyStatus，isEnable=$isEnable，" +
-                    "modeType=$modeType，transitionMode=$transitionMode，moveStatus=$moveStatus，" +
-                    "errorStatus=$errorStatus，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
+                    runtimeAckStateText(
+                        status = status,
+                        onlineStatus = onlineStatus,
+                        supplyStatus = supplyStatus,
+                        isEnable = isEnable,
+                        modeType = modeType,
+                        transitionMode = transitionMode,
+                        moveStatus = moveStatus,
+                        errorStatus = errorStatus
+                    ) +
+                    "，ackTs=$ackTs，ackLatencyMs=${ackResult.ackLatencyMs ?: -1L}，" +
                     "source=${ackResult.snapshot?.source ?: "unknown"}"
             )
         }
@@ -150,9 +187,13 @@ object VMMqttHelper : VMMqtt() {
             if (content.containsKey("refreshRemoteConfig")) content.getString("refreshRemoteConfig") else ""
         return when (messageType) {
             MqttProtocol.TYPE_RUNTIME_CONTROL ->
-                "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, onlineStatus=$onlineStatus, isEnable=$isEnable, refreshRemoteConfig=$refreshRemoteConfig"
+                "收到运行时控制：action=2（设备状态同步），controlSeq=$controlSeq, " +
+                    "onlineStatus（设备营业状态）=${onlineStatus.ifBlank { "未携带" }}, " +
+                    "isEnable（烤肠算法开关）=${isEnable.ifBlank { "未携带" }}, refreshRemoteConfig=$refreshRemoteConfig"
             MqttProtocol.TYPE_CONCURRENCY_CONTROL ->
-                "收到并发控制：action=2（设备状态同步），controlSeq=$controlSeq, modeType=$modeType, transitionMode=$transitionMode"
+                "收到并发控制：action=2（设备状态同步），controlSeq=$controlSeq, " +
+                    "modeType（并发模式）=${modeType.ifBlank { "未携带" }}, " +
+                    "transitionMode（并发切换过渡态）=${transitionMode.ifBlank { "未携带" }}"
             MqttProtocol.TYPE_RUNTIME_CONTROL_ACK ->
                 "收到运行时控制回执：action=2（设备状态同步），controlSeq=$controlSeq, payloadLength=${payload.length}"
             MqttProtocol.TYPE_RUNTIME_STATE_ACK -> {
@@ -286,7 +327,10 @@ object VMMqttHelper : VMMqtt() {
         // 【并发防冲突】如果已经在连接中，不启动新的调度
         synchronized(this) {
             if (isConnecting) {
-                LogUtils.w("【MQTT连接】当前正在进行连接握手 (isConnecting=1)，跳过来自 [$reason] 的重连调度")
+                LogUtils.w(
+                    "【MQTT连接】重复重连请求已跳过：reason=$reason，" +
+                        "isConnecting（MQTT连接握手中标记）=1（正在连接）"
+                )
                 return
             }
             if (reconnectRunnable != null) {

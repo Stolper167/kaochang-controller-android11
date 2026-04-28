@@ -107,9 +107,10 @@ object KaoChangAlgorithm {
     }
 
     private fun moveStatusText(value: Int): String = when (value) {
-        0 -> "0(机械臂空闲)"
-        1 -> "1(机械臂运动中)"
-        else -> "$value(未知)"
+        0 -> "0（机械臂空闲）"
+        1 -> "1（机械臂运动中）"
+        2 -> "2（夹取/出餐中）"
+        else -> "$value（未知）"
     }
 
     private fun errorStatusText(value: Int): String = when (value) {
@@ -243,10 +244,10 @@ object KaoChangAlgorithm {
         if (config.onlineStatus == 3 && config.errorStatus == 2 && !VMModbusHelper.connectStatus()) {
             modbusRecoveryPolicy.markDisconnectedAtStartup()
         }
-        logD(LOG_ALGORITHM, "算法准备0：moveStatus=${config.moveStatus}")
+        val previousMoveStatus = config.moveStatus
+        logD(LOG_ALGORITHM, "算法服务启动前重置机械动作状态：moveStatus（机械动作状态）=${moveStatusText(previousMoveStatus)} -> 0（机械臂空闲）")
         config.moveStatus = 0
         AppConfig.saveAppConfig(config)
-        logD(LOG_ALGORITHM, "算法准备1：moveStatus=${config.moveStatus}")
         serviceStartTime = System.currentTimeMillis()
         logD(LOG_ALGORITHM, "智能烤肠算法服务启动")
         startModbusStateMonitor()
@@ -706,23 +707,30 @@ object KaoChangAlgorithm {
     }
 
     /**
-     * 维护页批量重置烤盘。
-     * 所有有肠烤盘都会按“管理员指定丢弃”处理。
+     * 批量重置有肠烤盘。
+     *
+     * 默认来源是维护页手动清空；营业结束自动清盘会传入自己的来源，避免日志误导为人工操作。
      */
-    suspend fun resetKaoPan(progressCallback: ((current: Int, total: Int, kaoPan: KaoPan) -> Unit)? = null) {
+    suspend fun resetKaoPan(
+        progressCallback: ((current: Int, total: Int, kaoPan: KaoPan) -> Unit)? = null,
+        source: String = "管理员指定",
+        detail: String = "维护页批量重置烤盘",
+        snapshotReason: String = "管理员重置烤盘",
+        logCategory: String = "维护操作"
+    ) {
         val kaoPanList = KaoPanHelper.getKaoPanList()
         val targetPans = kaoPanList.filter { it.isHasSausage }
         val targetPositions = targetPans.map { it.positionSn }
-        LogUtils.i("【维护操作】管理员触发批量丢弃重置烤盘，待处理烤盘=$targetPositions")
+        LogUtils.i("【$logCategory】批量丢弃重置烤盘：source=$source，detail=$detail，待处理烤盘=$targetPositions")
         targetPans.forEachIndexed { index, kaoPan ->
             progressCallback?.invoke(index + 1, targetPans.size, kaoPan)
             KaoChangOperate.discardSausage(
                 kaoPan,
-                source = "管理员指定",
-                detail = "维护页批量重置烤盘"
+                source = source,
+                detail = detail
             )
         }
-        KaoChangScheduler.clearSnapshot("管理员重置烤盘")
+        KaoChangScheduler.clearSnapshot(snapshotReason)
     }
 
     /**

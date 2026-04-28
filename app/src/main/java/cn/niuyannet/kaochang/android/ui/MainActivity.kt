@@ -25,6 +25,7 @@ import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.services.CameraMonitor
 import cn.niuyannet.kaochang.android.services.KaoChangAlgorithm
 import cn.niuyannet.kaochang.android.utils.ConnectManageHelper
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.MaintenanceUiRefreshBridge
@@ -119,9 +120,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         if (correctedByBusinessStart) {
             LogUtils.d(
                 "【启动流程】启动纠偏：检测到已进入营业时间，纠正本地旧状态 | " +
-                    "source=$source，onlineStatus（设备营业状态）=${correctedConfig.onlineStatus}，" +
-                    "isEnable（烤肠算法开关）=${correctedConfig.isEnable}，" +
-                    "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(correctedConfig.restStatusSource)}"
+                    "source=$source，onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(correctedConfig.onlineStatus)}，" +
+                    "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(correctedConfig.isEnable)}，" +
+                    "restStatusSource（休息中来源）=${DeviceStateText.restStatusSource(correctedConfig.restStatusSource)}"
             )
         }
 
@@ -137,9 +138,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             val currentConfig = AppConfig.getAppConfig()
             LogUtils.d(
                 "【启动流程】准备同步设备营业状态：source=$source，syncReason=$syncReason，" +
-                    "onlineStatus（设备营业状态）=${currentConfig.onlineStatus}，" +
-                    "isEnable（烤肠算法开关）=${currentConfig.isEnable}，" +
-                    "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(currentConfig.restStatusSource)}"
+                    "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(currentConfig.onlineStatus)}，" +
+                    "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(currentConfig.isEnable)}，" +
+                    "restStatusSource（休息中来源）=${DeviceStateText.restStatusSource(currentConfig.restStatusSource)}"
             )
             syncDeviceStatusToServer(retryDelaysMs = listOf(3000L))
         }
@@ -270,9 +271,9 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
                 LogUtils.d(
                     "【MQTT运行时控制】预刷新完成：" +
                         "success=${refreshResult.success}，changed=${refreshResult.changed}，" +
-                        "onlineStatus（设备营业状态）=${refreshResult.onlineStatus}，" +
+                        "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(refreshResult.onlineStatus)}，" +
                         "scanBlockStatus（前台屏蔽状态）=${refreshResult.scanBlockStatus}，" +
-                        "isEnable（烤肠算法开关）=${refreshResult.isEnable}"
+                        "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(refreshResult.isEnable)}"
                 )
                 applyRuntimeControlMessageAfterRefresh(
                     content = content,
@@ -328,12 +329,12 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
             "【MQTT运行时控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
                 "preRefreshAttempted=$preRefreshAttempted，preRefreshChanged=$preRefreshChanged，" +
-                "onlineStatus（设备营业状态）=${result.onlineStatus}，" +
+                "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(result.onlineStatus)}，" +
                 "supplyStatus（补货状态）=${result.supplyStatus}，" +
                 "scanBlockStatus（前台屏蔽状态）=${result.scanBlockStatus}，" +
                 "inspectionMode（检修模式）=${result.inspectionMode}，" +
-                "isEnable（烤肠算法开关）=${result.isEnable}，" +
-                "restStatusSource（休息中来源）=${AppConfig.restStatusSourceText(result.restStatusSource)}"
+                "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(result.isEnable)}，" +
+                "restStatusSource（休息中来源）=${DeviceStateText.restStatusSource(result.restStatusSource)}"
         )
         if (preRefreshChanged || (result.applied && result.changed)) {
             SendServerHelper.publishServiceUpdateStatus()
@@ -377,7 +378,8 @@ class MainActivity : OrderActivity(), ICameraStateCallBack {
         LogUtils.d(
             "【MQTT并发控制】处理完成：" +
                 "controlSeq=${result.controlSeq}，applied=${result.applied}，changed=${result.changed}，reason=${result.reason}，" +
-                "modeType（并发模式）=${result.modeType}，transitionMode（并发切换过渡态）=${result.transitionMode}，" +
+                "modeType（并发模式）=${DeviceStateText.modeType(result.modeType)}，" +
+                "transitionMode（并发切换过渡态）=${DeviceStateText.transitionMode(result.transitionMode)}，" +
                 "overrodeConflictingTransition=${result.overrodeConflictingTransition}"
         )
         if (result.applied && result.changed) {

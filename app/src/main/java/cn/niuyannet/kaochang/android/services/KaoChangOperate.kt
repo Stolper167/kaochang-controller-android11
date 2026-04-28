@@ -10,6 +10,7 @@ import cn.niuyannet.kaochang.android.model.bean.KaoPanBox
 import cn.niuyannet.kaochang.android.mqtt.SendServerHelper
 import cn.niuyannet.kaochang.android.net.DataManagementAPI
 import cn.niuyannet.kaochang.android.net.NetApi
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.HomeUiRefreshBridge
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.SauceDetectionUitls
@@ -150,15 +151,21 @@ object KaoChangOperate {
     }
 
     private fun onlineStatusDesc(status: Int): String = when (status) {
-        0 -> "0(未启用)"
-        1 -> "1(运营中)"
-        2 -> "2(休息中)"
-        3 -> "3(维护中)"
-        4 -> "4(工作中)"
-        else -> "$status(未知)"
+        0 -> "0（未启用）"
+        1 -> "1（运营中）"
+        2 -> "2（休息中）"
+        3 -> "3（维护中）"
+        4 -> "4（工作中/正在出餐）"
+        else -> "$status（未知）"
     }
 
     private fun restStatusSourceDesc(source: String?): String = AppConfig.restStatusSourceText(source)
+
+    private fun isEnableDesc(value: Int): String = when (value) {
+        0 -> "0（关闭）"
+        1 -> "1（开启）"
+        else -> "$value（未知）"
+    }
 
     private fun moveStatusDesc(status: Int): String = when (status) {
         0 -> "0(空闲)"
@@ -1607,7 +1614,7 @@ object KaoChangOperate {
             LOG_SELF_CLEAN,
             "自清洁失败：target=$targetLabel，result=${actionExecutionResultDesc(result)}，" +
                 "onlineStatus（设备营业状态）=${onlineStatusDesc(config.onlineStatus)}，" +
-                "errorStatus（设备故障状态）=${config.errorStatus}(2=设备故障)"
+                "errorStatus（设备故障状态）=${DeviceStateText.errorStatus(config.errorStatus)}"
         )
     }
 
@@ -2148,7 +2155,7 @@ object KaoChangOperate {
      * - 顾客取走：返回 TAKEN_BY_USER
      * - 超时未取且系统已丢弃：返回 DISCARDED，由订单层上报独立“已丢弃”状态并继续处理后续数量
      * - 售卖口始终未确认到货或视觉长期不可确认：返回 DELIVERY_NOT_CONFIRMED，由订单层按失败处理
-     * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status=5
+     * - 机械、识别或通信异常：返回 ERROR，并由上层上报 status（订单事件状态）=5（单次履约失败）
      */
     suspend fun takeSausageResult(kaoPan: KaoPan): TakeSausageResult {
         // 说明：
@@ -2467,20 +2474,15 @@ object KaoChangOperate {
             return
         }
 
-        val previousOnlineStatus = config.onlineStatus
-        val previousIsEnable = config.isEnable
-        val previousRestStatusSource = config.restStatusSource
-        config.onlineStatus = 1
-        config.isEnable = 1
-        config.restStatusSource = AppConfigBean.REST_SOURCE_NONE
+        val changeResult = BusinessRuntimeStateHelper.applyAutoStartBusiness(config)
         AppConfig.saveAppConfig(config)
         KaoChangAlgorithm.isEnabled = true
         logI(
             LOG_DEVICE,
             "营业开始自动恢复：source=$source，" +
-                "onlineStatus=${onlineStatusDesc(previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
-                "isEnable=$previousIsEnable(0=关闭, 1=开启)->${config.isEnable}(1=开启)，" +
-                "restStatusSource（休息中来源）=${restStatusSourceDesc(previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(changeResult.previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
+                "isEnable（烤肠算法开关）=${isEnableDesc(changeResult.previousIsEnable)}->${isEnableDesc(config.isEnable)}，" +
+                "restStatusSource（休息中来源）=${restStatusSourceDesc(changeResult.previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
         )
         restoreHeatingStateFromCurrentPans("营业时间开始自动恢复")
         SendServerHelper.publishServiceUpdateStatus()
@@ -2512,22 +2514,27 @@ object KaoChangOperate {
             )
             return
         }
-        // 当前是运营中，自动切换为休息中
-        config.apply {
-            onlineStatus = 2
-            restStatusSource = AppConfigBean.REST_SOURCE_AUTO_END_BUSINESS
-        }
+        // 当前是运营中，自动切换为休息中，并关闭自动调度，等待下次营业开始再自动恢复。
+        val changeResult = BusinessRuntimeStateHelper.applyAutoEndBusiness(config)
+        KaoChangAlgorithm.isEnabled = false
         AppConfig.saveAppConfig(config)
         logD(
             LOG_DEVICE,
-            "营业时间结束：已自动切换为休息中（2），" +
-                "restStatusSource（休息中来源）=${restStatusSourceDesc(config.restStatusSource)}"
+            "营业时间结束：已自动切换为休息中并关闭烤肠算法，" +
+                "onlineStatus（设备营业状态）=${onlineStatusDesc(changeResult.previousOnlineStatus)}->${onlineStatusDesc(config.onlineStatus)}，" +
+                "isEnable（烤肠算法开关）=${isEnableDesc(changeResult.previousIsEnable)}->${isEnableDesc(config.isEnable)}，" +
+                "restStatusSource（休息中来源）=${restStatusSourceDesc(changeResult.previousRestStatusSource)}->${restStatusSourceDesc(config.restStatusSource)}"
         )
         //同步更新云端状态
         SendServerHelper.publishServiceUpdateStatus()
         //执行丢弃操作
         try {
-            KaoChangAlgorithm.resetKaoPan()
+            KaoChangAlgorithm.resetKaoPan(
+                source = "营业结束自动清盘",
+                detail = "营业结束自动重置有肠烤盘",
+                snapshotReason = "营业结束自动清盘",
+                logCategory = "营业结束"
+            )
             if (!SelfCleanFeatureToggle.isEnabled()) {
                 config.zone3Dirty = 0
                 config.zone3CleanPending = 0
@@ -2596,7 +2603,11 @@ object KaoChangOperate {
         source: String = "KaoChangOperate.writeSingleRegister（立即写寄存器入口）",
         action: String? = null
     ): VMModbusHelper.ModbusOperationResult{
-        logD(LOG_DEVICE, "写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
+        logD(
+            LOG_DEVICE,
+            "准备写入下位机寄存器：address=$address，value=$value，source=$source，action=$action，" +
+                "errorStatus（设备故障状态）=${DeviceStateText.errorStatus(AppConfig.getAppConfig().errorStatus)}"
+        )
         return VMModbusHelper.writeSingleRegister(
             modbus_address,
             address,
@@ -2614,7 +2625,11 @@ object KaoChangOperate {
      */
     suspend fun writeSingleRegister2(address: Int,value:Int): VMModbusHelper.ModbusOperationResult{
         delay(150)
-        logD(LOG_DEVICE, "延迟写寄存器前错误状态检查：errorStatus=${AppConfig.getAppConfig().errorStatus}")
+        logD(
+            LOG_DEVICE,
+            "延迟写入下位机寄存器：address=$address，value=$value，" +
+                "errorStatus（设备故障状态）=${DeviceStateText.errorStatus(AppConfig.getAppConfig().errorStatus)}"
+        )
         return VMModbusHelper.writeSingleRegister(
             modbus_address,
             address,

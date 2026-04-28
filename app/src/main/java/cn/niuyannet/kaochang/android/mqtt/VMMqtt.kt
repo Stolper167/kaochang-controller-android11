@@ -334,9 +334,12 @@ open class VMMqtt {
 
         try {
             if (isConnecting) {
-                LogUtils.w("【MQTT清理】检测到有残留的并发连接动作 (isConnecting=1)，强制换代回收，不阻塞当前流程")
+                LogUtils.d(
+                    "【MQTT清理】发现旧 MQTT 客户端实例，当前正在创建新连接：" +
+                        "isConnecting（MQTT连接握手中标记）=1（正在连接），处理=释放旧实例后继续新连接"
+                )
             } else {
-                LogUtils.d("【MQTT清理】检测到旧客户端实例，启动深度回收程序...")
+                LogUtils.d("【MQTT清理】发现旧 MQTT 客户端实例，准备释放后创建新连接")
             }
 
             // 1. 先将当前活跃代次挂空，使得旧对象接下来的所有异步回调全部失效丢弃
@@ -345,7 +348,7 @@ open class VMMqtt {
             // 2. 然后强行断连和关闭。利用协程后台作用域避免卡死主调度
             cleanupScope.launch {
                 silentClose(oldClient)
-                LogUtils.d("【MQTT清理】协程回收任务：残余旧实例资源已完全物理切除")
+                LogUtils.d("【MQTT清理】旧 MQTT 客户端实例已释放")
             }
 
         } catch (e: Exception) {

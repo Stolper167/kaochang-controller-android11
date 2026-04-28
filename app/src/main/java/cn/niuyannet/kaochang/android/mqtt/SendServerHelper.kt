@@ -1,6 +1,7 @@
 package cn.niuyannet.kaochang.android.mqtt
 
 import cn.niuyannet.kaochang.android.init.AppConfig
+import cn.niuyannet.kaochang.android.utils.DeviceStateText
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
@@ -43,6 +44,32 @@ object SendServerHelper {
 
     private fun availableSourceText(source: String): String {
         return source.substringBefore(':').ifBlank { source }
+    }
+
+    private fun runtimeStateText(
+        status: Int,
+        onlineStatus: Int,
+        supplyStatus: Int,
+        scanBlockStatus: Int,
+        inspectionMode: Int,
+        isEnable: Int,
+        modeType: Int,
+        transitionMode: Int,
+        moveStatus: Int,
+        errorStatus: Int,
+        restStatusSource: String?
+    ): String {
+        return "status（设备启用状态）=${DeviceStateText.serviceStatus(status)}，" +
+            "onlineStatus（设备营业状态）=${DeviceStateText.onlineStatus(onlineStatus)}，" +
+            "supplyStatus（补货状态）=$supplyStatus，" +
+            "scanBlockStatus（前台屏蔽状态）=$scanBlockStatus，" +
+            "inspectionMode（检修模式）=$inspectionMode，" +
+            "isEnable（烤肠算法开关）=${DeviceStateText.isEnable(isEnable)}，" +
+            "modeType（并发模式）=${DeviceStateText.modeType(modeType)}，" +
+            "transitionMode（并发切换过渡态）=${DeviceStateText.transitionMode(transitionMode)}，" +
+            "moveStatus（机械动作状态）=${DeviceStateText.moveStatus(moveStatus)}，" +
+            "errorStatus（设备故障状态）=${DeviceStateText.errorStatus(errorStatus)}，" +
+            "restStatusSource（休息中来源）=${DeviceStateText.restStatusSource(restStatusSource)}"
     }
 
     internal fun buildAvailableStateLogKey(available: Long): String {
@@ -192,21 +219,38 @@ object SendServerHelper {
             scheduleRuntimeStateAckTimeout(snapshot)
             LogUtils.d(
                 "【MQTT运行态】已上报运行时状态：" +
-                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，" +
-                    "onlineStatus=${config.onlineStatus}，supplyStatus=${config.supplyStatus}，" +
-                    "scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
-                    "isEnable=${AppConfig.getAlgorithmEnableFlag()}，" +
-                    "modeType=${config.modeType}，transitionMode=${config.transitionMode}，" +
-                    "moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}，" +
-                    "restStatusSource=${config.restStatusSource}"
+                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，" +
+                    runtimeStateText(
+                        status = config.status,
+                        onlineStatus = config.onlineStatus,
+                        supplyStatus = config.supplyStatus,
+                        scanBlockStatus = config.scanBlockStatus,
+                        inspectionMode = config.inspectionMode,
+                        isEnable = AppConfig.getAlgorithmEnableFlag(),
+                        modeType = config.modeType,
+                        transitionMode = config.transitionMode,
+                        moveStatus = config.moveStatus,
+                        errorStatus = config.errorStatus,
+                        restStatusSource = config.restStatusSource
+                    )
             )
         } else {
             LogUtils.w(
                 "【MQTT运行态】运行时状态上报失败：" +
-                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，status=${config.status}，onlineStatus=${config.onlineStatus}，" +
-                    "supplyStatus=${config.supplyStatus}，scanBlockStatus=${config.scanBlockStatus}，inspectionMode=${config.inspectionMode}，" +
-                    "isEnable=${AppConfig.getAlgorithmEnableFlag()}，modeType=${config.modeType}，" +
-                    "transitionMode=${config.transitionMode}，moveStatus=${config.moveStatus}，errorStatus=${config.errorStatus}"
+                    "runtimeSeq=$seq，reusedSeq=$reusedSeq，source=$source，" +
+                    runtimeStateText(
+                        status = config.status,
+                        onlineStatus = config.onlineStatus,
+                        supplyStatus = config.supplyStatus,
+                        scanBlockStatus = config.scanBlockStatus,
+                        inspectionMode = config.inspectionMode,
+                        isEnable = AppConfig.getAlgorithmEnableFlag(),
+                        modeType = config.modeType,
+                        transitionMode = config.transitionMode,
+                        moveStatus = config.moveStatus,
+                        errorStatus = config.errorStatus,
+                        restStatusSource = config.restStatusSource
+                    )
             )
         }
         return ok
@@ -323,11 +367,20 @@ object SendServerHelper {
             LogUtils.w(
                 "【MQTT运行态】运行时状态上报后仍未收到服务端确认：" +
                     "runtimeSeq=${pending.runtimeSeq}，source=${pending.source}，" +
-                    "status=${pending.status}，onlineStatus=${pending.onlineStatus}，" +
-                    "supplyStatus=${pending.supplyStatus}，scanBlockStatus=${pending.scanBlockStatus}，inspectionMode=${pending.inspectionMode}，" +
-                    "isEnable=${pending.isEnable}，modeType=${pending.modeType}，" +
-                    "transitionMode=${pending.transitionMode}，moveStatus=${pending.moveStatus}，" +
-                    "errorStatus=${pending.errorStatus}，ageMs=$ageMs"
+                    runtimeStateText(
+                        status = pending.status,
+                        onlineStatus = pending.onlineStatus,
+                        supplyStatus = pending.supplyStatus,
+                        scanBlockStatus = pending.scanBlockStatus,
+                        inspectionMode = pending.inspectionMode,
+                        isEnable = pending.isEnable,
+                        modeType = pending.modeType,
+                        transitionMode = pending.transitionMode,
+                        moveStatus = pending.moveStatus,
+                        errorStatus = pending.errorStatus,
+                        restStatusSource = pending.restStatusSource
+                    ) +
+                    "，ageMs=$ageMs"
             )
         }, RUNTIME_STATE_ACK_TIMEOUT_MS)
     }

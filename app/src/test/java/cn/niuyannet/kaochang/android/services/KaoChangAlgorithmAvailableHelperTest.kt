@@ -1,11 +1,62 @@
 package cn.niuyannet.kaochang.android.services
 
+import cn.niuyannet.kaochang.android.init.AppConfigBean
 import cn.niuyannet.kaochang.android.model.bean.KaoPan
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
 class KaoChangAlgorithmAvailableHelperTest {
+
+    @Test
+    fun currentLegacySellPositions_shouldUseOnlyFrontNineInLowStable() {
+        val config = AppConfigBean().apply {
+            modeType = 1
+            transitionMode = 0
+        }
+
+        assertEquals(1..9, KaoChangAlgorithm.currentLegacySellPositions(config))
+    }
+
+    @Test
+    fun currentLegacySellPositions_shouldUseFrontTwentyOneInHighOrTransition() {
+        val highConfig = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 0
+        }
+        val lowToHighConfig = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 1
+        }
+
+        assertEquals(1..21, KaoChangAlgorithm.currentLegacySellPositions(highConfig))
+        assertEquals(1..21, KaoChangAlgorithm.currentLegacySellPositions(lowToHighConfig))
+    }
+
+    @Test
+    fun currentLegacyHeatRange_shouldKeepSupplementZonesOutOfSellArea() {
+        val lowStableConfig = AppConfigBean().apply {
+            modeType = 1
+            transitionMode = 0
+        }
+        val highStableConfig = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 0
+        }
+        val lowToHighConfig = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 1
+        }
+        val highToLowConfig = AppConfigBean().apply {
+            modeType = 2
+            transitionMode = 2
+        }
+
+        assertEquals(13..18, KaoChangAlgorithm.currentLegacyHeatRange(lowStableConfig))
+        assertEquals(25..33, KaoChangAlgorithm.currentLegacyHeatRange(highStableConfig))
+        assertEquals(25..33, KaoChangAlgorithm.currentLegacyHeatRange(lowToHighConfig))
+        assertEquals(25..33, KaoChangAlgorithm.currentLegacyHeatRange(highToLowConfig))
+    }
 
     @Test
     fun findNextOpeningSellBatch_shouldPreferFirstHighConcurrencyBatchWhenItWillBecomeSellableSooner() {

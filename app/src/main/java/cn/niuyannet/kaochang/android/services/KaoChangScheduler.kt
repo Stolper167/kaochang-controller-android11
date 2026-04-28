@@ -34,6 +34,12 @@ internal data class LowSecondaryEvacuationMove(
     val targetPositionSn: Int
 ) : Serializable
 
+internal data class LowReadyEvacuationTarget(
+    val targetPositionSn: Int,
+    val isOriginalPit: Boolean,
+    val isTasteFallback: Boolean
+) : Serializable
+
 internal data class HighToLowCompactionMove(
     val sourcePositionSn: Int,
     val targetPositionSn: Int
@@ -233,6 +239,80 @@ internal fun planLowSecondaryHoldingEvacuation(
             targetPositionSn = targetPan.positionSn
         )
     }
+}
+
+internal fun hasOppositeLowZoneHeating(
+    readyZone: BatchZone,
+    pans: List<KaoPan>
+): Boolean {
+    return oppositeLowZoneHeatingPositions(readyZone, pans).isNotEmpty()
+}
+
+internal fun oppositeLowZoneHeatingPositions(
+    readyZone: BatchZone,
+    pans: List<KaoPan>
+): List<Int> {
+    val oppositeRange = when (readyZone) {
+        BatchZone.LOW_PRIMARY -> 16..18
+        BatchZone.LOW_SECONDARY -> 13..15
+        BatchZone.HIGH_MAIN -> return emptyList()
+    }
+    return pans
+        .filter { pan ->
+            pan.positionSn in oppositeRange &&
+                pan.isHasSausage &&
+                (pan.status == 1 || (pan.startTime > 0L && pan.holdingTime <= 0L))
+        }
+        .map { it.positionSn }
+        .sorted()
+}
+
+internal fun resolveLowReadyEvacuationTarget(
+    pans: List<KaoPan>,
+    originalPitPositionSn: Int,
+    tasteCode: String?,
+    reservedTargetPositions: Set<Int> = emptySet()
+): LowReadyEvacuationTarget? {
+    val availableTargets = pans
+        .filter { pan ->
+            pan.positionSn in 1..9 &&
+                !pan.isHasSausage &&
+                !pan.isHasGrilling &&
+                pan.positionSn !in reservedTargetPositions
+        }
+        .sortedBy { it.positionSn }
+    if (availableTargets.isEmpty()) {
+        return null
+    }
+
+    availableTargets.firstOrNull { it.positionSn == originalPitPositionSn }?.let { target ->
+        return LowReadyEvacuationTarget(
+            targetPositionSn = target.positionSn,
+            isOriginalPit = true,
+            isTasteFallback = false
+        )
+    }
+
+    val normalizedTasteCode = tasteCode?.takeIf { it.isNotBlank() }
+    val sameTasteTarget = if (normalizedTasteCode == null) {
+        null
+    } else {
+        availableTargets.firstOrNull { it.taste?.tasteCode == normalizedTasteCode }
+    }
+    if (sameTasteTarget != null) {
+        return LowReadyEvacuationTarget(
+            targetPositionSn = sameTasteTarget.positionSn,
+            isOriginalPit = false,
+            isTasteFallback = false
+        )
+    }
+
+    val fallbackTarget = availableTargets.first()
+    return LowReadyEvacuationTarget(
+        targetPositionSn = fallbackTarget.positionSn,
+        isOriginalPit = false,
+        isTasteFallback = true
+    )
 }
 
 private data class FrontPlanSlot(
@@ -638,7 +718,11 @@ object KaoChangScheduler {
         val readyBatches = snapshot.batches.filter { it.state == BatchState.READY }
         readyBatches.forEach { batch ->
             if (batch.holdAtSupply) {
-                holdBatchInPlace(snapshot, batch, pans)
+                when (batch.zone) {
+                    BatchZone.LOW_PRIMARY,
+                    BatchZone.LOW_SECONDARY -> handleLowReadyBatch(snapshot, batch, pans)
+                    BatchZone.HIGH_MAIN -> holdBatchInPlace(snapshot, batch, pans)
+                }
             } else {
                 backfillBatch(snapshot, batch, pans)
             }
@@ -994,24 +1078,36 @@ object KaoChangScheduler {
                 return@forEach
             }
             val holdingTime = System.currentTimeMillis()
-            batch.items.forEach batchItems@{ item ->
-                val pan = pans.firstOrNull { it.positionSn == item.supplyPositionSn } ?: return@batchItems
-                if (pan.isHasSausage) {
-                    markPanHolding(pan, holdingTime)
-                }
-            }
             when (batch.zone) {
                 BatchZone.LOW_PRIMARY,
                 BatchZone.LOW_SECONDARY -> {
-                    if (snapshot.batches.none {
-                            it.batchId != batch.batchId &&
-                                it.zone != BatchZone.HIGH_MAIN &&
-                                it.state == BatchState.HEATING
-                        }) {
+                    val oppositeHeatingPositions = oppositeLowZoneHeatingPositions(batch.zone, pans)
+                    if (oppositeHeatingPositions.isEmpty()) {
+                        batch.items.forEach batchItems@{ item ->
+                            val pan = pans.firstOrNull { it.positionSn == item.supplyPositionSn } ?: return@batchItems
+                            if (pan.isHasSausage) {
+                                markPanHolding(pan, holdingTime)
+                            }
+                        }
                         KaoChangOperate.keepWarm(2)
+                    } else {
+                        KaoChangOperate.heating(2)
+                        LogUtils.w(
+                            TAG,
+                            "zone2Evacuation（二区熟肠避让）待执行：batch=${batch.batchId}，zone=${batch.zone}，" +
+                                "sourcePositions=${batch.items.map { it.supplyPositionSn }}，" +
+                                "oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions，" +
+                                "reason=同一物理二区仍需烤制温度，已熟烤肠暂不标记为 status（烤盘状态）=2（保温可售）"
+                        )
                     }
                 }
                 BatchZone.HIGH_MAIN -> {
+                    batch.items.forEach batchItems@{ item ->
+                        val pan = pans.firstOrNull { it.positionSn == item.supplyPositionSn } ?: return@batchItems
+                        if (pan.isHasSausage) {
+                            markPanHolding(pan, holdingTime)
+                        }
+                    }
                     KaoChangOperate.keepWarm(3)
                 }
             }
@@ -1201,6 +1297,129 @@ object KaoChangScheduler {
             cleanupZoneHeating(batch.zone, pans, snapshot)
             LogUtils.i(TAG, "批次回填完成：batch=${batch.batchId}")
         }
+    }
+
+    private suspend fun handleLowReadyBatch(snapshot: SchedulerSnapshot, batch: HeatBatch, pans: List<KaoPan>) {
+        val oppositeHeatingPositions = oppositeLowZoneHeatingPositions(batch.zone, pans)
+        if (oppositeHeatingPositions.isEmpty()) {
+            holdBatchInPlace(snapshot, batch, pans)
+            return
+        }
+
+        if (moveReadyLowBatchToFront(snapshot, batch, pans, oppositeHeatingPositions)) {
+            batch.state = BatchState.HELD
+            cleanupZoneHeating(batch.zone, pans, snapshot)
+            KaoChangOperate.heating(2)
+            LogUtils.i(
+                TAG,
+                "zone2Evacuation（二区熟肠避让）完成：batch=${batch.batchId}，zone=${batch.zone}，" +
+                    "oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions，" +
+                    "result=已搬到一区并保持二区继续烤制"
+            )
+        } else {
+            KaoChangOperate.heating(2)
+            LogUtils.w(
+                TAG,
+                "zone2Evacuation（二区熟肠避让）未完成：batch=${batch.batchId}，zone=${batch.zone}，" +
+                    "oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions，" +
+                    "result=本轮保持 READY，下一轮继续尝试，源位暂不标记为 status（烤盘状态）=2（保温可售）"
+            )
+        }
+    }
+
+    private suspend fun moveReadyLowBatchToFront(
+        snapshot: SchedulerSnapshot,
+        batch: HeatBatch,
+        pans: List<KaoPan>,
+        oppositeHeatingPositions: List<Int>
+    ): Boolean {
+        val reservedTargetPositions = mutableSetOf<Int>()
+        KaoChangOperate.keepWarm(1)
+        batch.items.forEach { item ->
+            if (item.completed) {
+                return@forEach
+            }
+            val sourcePan = pans.firstOrNull { it.positionSn == item.supplyPositionSn }
+            if (sourcePan == null) {
+                LogUtils.w(
+                    TAG,
+                    "zone2Evacuation（二区熟肠避让）失败：batch=${batch.batchId}，source=${item.supplyPositionSn}，" +
+                        "reason=来源烤盘不存在，oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions"
+                )
+                return false
+            }
+            if (!sourcePan.isHasSausage) {
+                item.completed = true
+                markPitFulfilled(snapshot, item.pitId)
+                return@forEach
+            }
+
+            val pit = snapshot.pits.firstOrNull { it.pitId == item.pitId }
+            val originalPitPosition = pit?.positionSn ?: item.targetPositionSn
+            val tasteCode = item.taste?.tasteCode ?: sourcePan.taste?.tasteCode
+            val target = resolveLowReadyEvacuationTarget(
+                pans = pans,
+                originalPitPositionSn = originalPitPosition,
+                tasteCode = tasteCode,
+                reservedTargetPositions = reservedTargetPositions
+            )
+            if (target == null) {
+                LogUtils.w(
+                    TAG,
+                    "zone2Evacuation（二区熟肠避让）失败：batch=${batch.batchId}，source=${sourcePan.positionSn}，" +
+                        "originalPit=$originalPitPosition，tasteCode=${tasteCode ?: "未知"}，" +
+                        "candidateTargets=${pans.filter { it.positionSn in 1..9 && !it.isHasSausage && !it.isHasGrilling }.map { it.positionSn }}，" +
+                        "reason=一区没有可搬入空位，oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions"
+                )
+                return false
+            }
+
+            val targetPan = pans.firstOrNull { it.positionSn == target.targetPositionSn }
+            if (targetPan == null) {
+                LogUtils.w(
+                    TAG,
+                    "zone2Evacuation（二区熟肠避让）失败：batch=${batch.batchId}，source=${sourcePan.positionSn}，" +
+                        "target=${target.targetPositionSn}，reason=目标烤盘不存在"
+                )
+                return false
+            }
+
+            val targetHoldingTime = if (sourcePan.holdingTime > 0L) {
+                sourcePan.holdingTime
+            } else {
+                System.currentTimeMillis()
+            }
+            LogUtils.i(
+                TAG,
+                "zone2Evacuation（二区熟肠避让）开始搬移：batch=${batch.batchId}，source=${sourcePan.positionSn}，" +
+                    "target=${target.targetPositionSn}，isOriginalPit（是否原始坑位）=${target.isOriginalPit}，" +
+                    "isTasteFallback（是否口味兜底搬移）=${target.isTasteFallback}，tasteCode=${tasteCode ?: "未知"}，" +
+                    "oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions"
+            )
+            val moved = KaoChangOperate.moveKaoPanToKaoPan(sourcePan, targetPan, targetHoldingTime)
+            if (!moved) {
+                LogUtils.w(
+                    TAG,
+                    "zone2Evacuation（二区熟肠避让）失败：batch=${batch.batchId}，source=${sourcePan.positionSn}，" +
+                        "target=${target.targetPositionSn}，isOriginalPit（是否原始坑位）=${target.isOriginalPit}，" +
+                        "isTasteFallback（是否口味兜底搬移）=${target.isTasteFallback}，tasteCode=${tasteCode ?: "未知"}，" +
+                        "reason=机械搬移失败，oppositeHeatingPositions（对侧仍在二区烤制的位置）=$oppositeHeatingPositions"
+                )
+                return false
+            }
+
+            reservedTargetPositions += target.targetPositionSn
+            item.targetPositionSn = target.targetPositionSn
+            item.completed = true
+            markPitFulfilled(snapshot, item.pitId)
+            LogUtils.i(
+                TAG,
+                "zone2Evacuation（二区熟肠避让）单根完成：batch=${batch.batchId}，source=${sourcePan.positionSn}，" +
+                    "target=${target.targetPositionSn}，isOriginalPit（是否原始坑位）=${target.isOriginalPit}，" +
+                    "isTasteFallback（是否口味兜底搬移）=${target.isTasteFallback}，targetHoldingTime=$targetHoldingTime"
+            )
+        }
+        return batch.items.all { it.completed }
     }
 
     private fun holdBatchInPlace(snapshot: SchedulerSnapshot, batch: HeatBatch, pans: List<KaoPan>) {

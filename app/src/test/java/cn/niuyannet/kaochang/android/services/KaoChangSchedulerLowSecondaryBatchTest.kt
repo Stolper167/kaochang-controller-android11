@@ -240,6 +240,114 @@ class KaoChangSchedulerLowSecondaryBatchTest {
         assertEquals(emptyList<LowSecondaryEvacuationMove>(), moves)
     }
 
+    @Test
+    fun lowReadyEvacuationTarget_shouldPreferOriginalPitWhenAvailable() {
+        val pans = (1..9).map { position ->
+            pan(positionSn = position, tasteCode = "A").apply {
+                setHasSausage(position != 4)
+                setStatus(if (position == 4) 0 else 2)
+            }
+        }
+
+        val target = resolveLowReadyEvacuationTarget(
+            pans = pans,
+            originalPitPositionSn = 4,
+            tasteCode = "B"
+        )
+
+        assertEquals(4, target?.targetPositionSn)
+        assertTrue("原始坑位可用时应优先搬回原坑", target?.isOriginalPit == true)
+        assertFalse("搬回原始坑位不是口味兜底搬移", target?.isTasteFallback == true)
+    }
+
+    @Test
+    fun lowReadyEvacuationTarget_shouldFallbackToSameTasteEmptyFrontSlot() {
+        val pans = (1..9).map { position ->
+            pan(positionSn = position, tasteCode = if (position == 5) "B" else "A").apply {
+                setHasSausage(position !in listOf(4, 5))
+                setStatus(if (position in listOf(4, 5)) 0 else 2)
+            }
+        }
+
+        val target = resolveLowReadyEvacuationTarget(
+            pans = pans,
+            originalPitPositionSn = 4,
+            tasteCode = "B",
+            reservedTargetPositions = setOf(4)
+        )
+
+        assertEquals(5, target?.targetPositionSn)
+        assertFalse("原始坑被占用或预留时不应标记为原始坑", target?.isOriginalPit == true)
+        assertFalse("同口味空位不是口味兜底搬移", target?.isTasteFallback == true)
+    }
+
+    @Test
+    fun lowReadyEvacuationTarget_shouldUseAnyFrontSlotWhenTasteDoesNotMatch() {
+        val pans = (1..9).map { position ->
+            pan(positionSn = position, tasteCode = "A").apply {
+                setHasSausage(position !in listOf(2, 4))
+                setStatus(if (position in listOf(2, 4)) 0 else 2)
+            }
+        }
+
+        val target = resolveLowReadyEvacuationTarget(
+            pans = pans,
+            originalPitPositionSn = 4,
+            tasteCode = "B",
+            reservedTargetPositions = setOf(4)
+        )
+
+        assertEquals(2, target?.targetPositionSn)
+        assertFalse("任意空位兜底不应标记为原始坑", target?.isOriginalPit == true)
+        assertTrue("没有同口味空位时应标记为口味兜底搬移", target?.isTasteFallback == true)
+    }
+
+    @Test
+    fun lowReadyEvacuationTarget_shouldReturnNullWhenFrontHasNoEmptySlot() {
+        val pans = (1..9).map { position ->
+            pan(positionSn = position, tasteCode = "B").apply {
+                setHasSausage(true)
+                setStatus(2)
+            }
+        }
+
+        val target = resolveLowReadyEvacuationTarget(
+            pans = pans,
+            originalPitPositionSn = 4,
+            tasteCode = "B"
+        )
+
+        assertNull("一区没有空位时，成熟批次不能伪装成保温可售", target)
+    }
+
+    @Test
+    fun lowReadyBatch_shouldDetectOppositeLowZoneHeating() {
+        val pans = (1..18).map { position ->
+            pan(positionSn = position, tasteCode = "B").apply {
+                when (position) {
+                    16 -> {
+                        setHasSausage(true)
+                        setStatus(1)
+                        setStartTime(1_000L)
+                    }
+                    else -> {
+                        setHasSausage(false)
+                        setStatus(0)
+                    }
+                }
+            }
+        }
+
+        assertTrue(
+            "LOW_PRIMARY（13~15）成熟时，LOW_SECONDARY（16~18）仍在烤制应触发二区熟肠避让",
+            hasOppositeLowZoneHeating(BatchZone.LOW_PRIMARY, pans)
+        )
+        assertFalse(
+            "LOW_SECONDARY 自身作为待处理批次时，不应把 16~18 自己误判为对侧加热",
+            hasOppositeLowZoneHeating(BatchZone.LOW_SECONDARY, pans)
+        )
+    }
+
     // ──────────────────────────────────────────
     // Bug 2：lastHighBatchLaunchAt 重置后的误触防护
     // ──────────────────────────────────────────

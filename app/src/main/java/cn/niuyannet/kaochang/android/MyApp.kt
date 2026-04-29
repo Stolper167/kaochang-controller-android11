@@ -21,6 +21,7 @@ class MyApp: Application() {
         LogUtils.init(this)
         // 记录应用启动日志
         LogUtils.i("Application started")
+        AppConfig.logDeviceIdentity("Application启动", force = true)
         
         // 配置 OkGo 取消毫无意义的 HTTP 明文长日志（极大地缓解死循环刷屏）
         val builder = OkHttpClient.Builder()
@@ -32,7 +33,7 @@ class MyApp: Application() {
         OkGo.getInstance().init(this).setOkHttpClient(builder.build())
         //烤盘初始化 （改到MainActivity中再次初始化）
         //KaoPanHelper.init()
-        //网络数据初始化更新
+        // 网络数据初始化更新：设备编号未锁定时禁止用系统 ANDROID_ID 误同步。
         DataManagementAPI.dataSyncServer()
         //是否初始化，如果没有初始化就先进行初始化， 否则进行初始化
         ParserConfig.getGlobalInstance().isAutoTypeSupport = true

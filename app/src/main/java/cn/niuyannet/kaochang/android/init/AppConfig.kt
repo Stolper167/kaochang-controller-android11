@@ -1,7 +1,5 @@
 ﻿package cn.niuyannet.kaochang.android.init
 
-import android.provider.Settings
-import cn.niuyannet.kaochang.android.MyApp
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
@@ -90,6 +88,20 @@ object AppConfig {
 
     fun saveAppConfig(appConfigBean: AppConfigBean) {
         alignRestStatusSource(appConfigBean)
+        val normalizedDeviceCode = DeviceIdentityPolicy.normalizeDeviceCode(appConfigBean.deviceCode)
+        when {
+            !normalizedDeviceCode.isNullOrBlank() -> {
+                appConfigBean.deviceCode = normalizedDeviceCode
+                DeviceIdentityManager.saveDeviceCode(normalizedDeviceCode, "保存设备配置")
+            }
+            !appConfigBean.deviceCode.isNullOrBlank() -> {
+                LogUtils.w(
+                    "【设备身份】保存设备配置时发现非法 deviceCode（云端设备编号），已清空本地配置字段：" +
+                        "rawDeviceCode=${appConfigBean.deviceCode}"
+                )
+                appConfigBean.deviceCode = ""
+            }
+        }
         this.appConfigBean = appConfigBean
         PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(appConfigBean))
     }
@@ -161,7 +173,23 @@ object AppConfig {
         mergeString("mqttUsername", "mqttUsername") { config.mqttUsername = it }
         mergeString("mqttPassword", "mqttPassword") { config.mqttPassword = it }
         mergeString("modbusAddress", "modbusAddress") { config.modbusAddress = it }
-        mergeString("deviceCode", "deviceCode", allowBlank = false) { config.deviceCode = it }
+        if (!jsonData.containsKey("deviceCode") || jsonData.get("deviceCode") == null) {
+            preservedFields.add("deviceCode")
+        } else {
+            val rawDeviceCode = jsonData.getString("deviceCode")
+            val normalizedDeviceCode = DeviceIdentityPolicy.normalizeDeviceCode(rawDeviceCode)
+            if (normalizedDeviceCode.isNullOrBlank()) {
+                preservedFields.add("deviceCode")
+                parseIssues.add("deviceCode")
+                LogUtils.w(
+                    "[$logPrefix] 远端配置携带非法 deviceCode（云端设备编号），已忽略并保留本地身份：" +
+                        "rawDeviceCode=$rawDeviceCode"
+                )
+            } else {
+                config.deviceCode = normalizedDeviceCode
+                DeviceIdentityManager.saveDeviceCode(normalizedDeviceCode, "远端配置合并")
+            }
+        }
         mergeString("name", "name", allowBlank = false) { config.deviceName = it }
         mergeString("address", "address") { config.deviceAddress = it }
         mergeString("qrcodeUrl", "qrcodeUrl") { config.qcodeURL = it }
@@ -243,6 +271,9 @@ object AppConfig {
         }
 
         saveAppConfig(config)
+        if (jsonData.containsKey("deviceCode")) {
+            logDeviceIdentity("远端配置合并后")
+        }
 
         val hasValidConfig = hasValidDeviceConfig()
         val preservedFieldSet = preservedFields.distinct()
@@ -268,7 +299,7 @@ object AppConfig {
                 append("）")
             }
             append("，deviceCode=")
-            append(config.deviceCode.ifBlank { "未知" })
+            append(config.deviceCode?.ifBlank { "未知" } ?: "未知")
             jsonData.getString("updateTime")?.takeIf { it.isNotBlank() }?.let {
                 append("，serverUpdateTime=")
                 append(it)
@@ -301,16 +332,39 @@ object AppConfig {
     }
 
     fun getDeviceId(): String {
-        var androidId = PreferenceUtils.getStringPreference(Sp_File_URL, "sp_android_id", null)
-        if (androidId == null) {
-            androidId = Settings.Secure.getString(MyApp.instance().contentResolver, Settings.Secure.ANDROID_ID)
-            PreferenceUtils.saveStringPreference(Sp_File_URL, "sp_android_id", androidId)
-        }
-        return androidId
+        val deviceCode = DeviceIdentityManager.getDeviceCode()
+        syncCachedConfigDeviceCode(deviceCode)
+        return deviceCode
     }
 
-    fun saveDeviceId(androidId: String) {
-        PreferenceUtils.saveStringPreference(Sp_File_URL, "sp_android_id", androidId)
+    fun saveDeviceId(deviceCode: String) {
+        val normalizedDeviceCode = DeviceIdentityManager.saveDeviceCode(deviceCode, "保存设备编号")
+        if (!normalizedDeviceCode.isNullOrBlank()) {
+            val config = getAppConfig()
+            config.deviceCode = normalizedDeviceCode
+            saveAppConfig(config)
+        }
+    }
+
+    fun hasStableDeviceId(): Boolean {
+        return DeviceIdentityManager.hasStableDeviceCode()
+    }
+
+    fun logDeviceIdentity(reason: String, force: Boolean = false) {
+        DeviceIdentityManager.logIdentity(reason, force)
+    }
+
+    private fun syncCachedConfigDeviceCode(deviceCode: String) {
+        if (deviceCode.isBlank()) {
+            return
+        }
+        val config = getAppConfig()
+        if (config.deviceCode == deviceCode) {
+            return
+        }
+        config.deviceCode = deviceCode
+        appConfigBean = config
+        PreferenceUtils.saveStringPreference(Sp_File_URL, KEY_APP_CONFIG_JSON, JSON.toJSONString(config))
     }
 
     fun saveInspectionSnapshot(reason: String) {

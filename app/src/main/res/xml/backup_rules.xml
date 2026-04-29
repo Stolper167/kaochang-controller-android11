@@ -1,13 +1,6 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older that API 31
-   See https://developer.android.com/about/versions/12/backup-restore
--->
+<?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <!-- 设备身份只能由本机锁定，禁止通过系统备份恢复到另一台物理设备。 -->
+    <exclude domain="sharedpref" path="KAOCHANG_APP_CONFIG.xml" />
+    <exclude domain="file" path="kaochang_device_identity.json" />
 </full-backup-content>

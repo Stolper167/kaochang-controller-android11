@@ -41,6 +41,24 @@ open class VMMqtt {
     private val topicByServer = "/cl/devices/{device_id}/get"      // 服务端发给上位机的主题 (Topic)
     private val topicByDevice = "/cl/devices/{device_id}/service"  // 上位机上报给服务端的主题 (Topic)
 
+    private fun requireMqttDeviceCode(operation: String): String? {
+        val deviceCode = AppConfig.getDeviceId()
+        if (deviceCode.isBlank()) {
+            LogUtils.w(
+                "【设备身份】deviceCode（云端设备编号）未锁定，拒绝 MQTT $operation，" +
+                    "避免使用空 clientId 或空 topic"
+            )
+            AppConfig.logDeviceIdentity("MQTT $operation 前", force = true)
+            return null
+        }
+        return deviceCode
+    }
+
+    private fun buildDeviceTopic(template: String, operation: String): String? {
+        val deviceCode = requireMqttDeviceCode(operation) ?: return null
+        return template.replace("{device_id}", deviceCode)
+    }
+
     /**
      * 获取当前 MQTT 连接状态。
      * 返回：true=已连接, false=未连接
@@ -65,10 +83,15 @@ open class VMMqtt {
      * 使用 synchronized(this) 确保状态检查和修改的原子性。
      */
     fun connect(callback: (status: Boolean) -> Unit) {
+        AppConfig.logDeviceIdentity("MQTT连接前", force = true)
+        val deviceCode = requireMqttDeviceCode("连接") ?: run {
+            callback(false)
+            return
+        }
         synchronized(this) {
             // 检查是否正在连接中
             if (isConnecting) {
-                LogUtils.w("【MQTT连接】检测到已有连接任务正在进行中 (status=1)，跳过本次重复请求 | clientId=client_${AppConfig.getDeviceId()}")
+                LogUtils.w("【MQTT连接】检测到已有连接任务正在进行中 (status=1)，跳过本次重复请求 | clientId=client_$deviceCode")
                 return
             }
 
@@ -89,7 +112,7 @@ open class VMMqtt {
             val serverURI = "tcp://${appConfigBean.mqttHost}:${appConfigBean.mqttPort}"
             val username = appConfigBean.mqttUsername
             val passwordText = appConfigBean.mqttPassword ?: ""
-            val clientId = "client_${AppConfig.getDeviceId()}"
+            val clientId = "client_$deviceCode"
 
             LogUtils.d("【MQTT连接】执行连接逻辑 | server=$serverURI | clientId=$clientId")
 
@@ -360,7 +383,8 @@ open class VMMqtt {
      * 向服务端主题发布消息。
      */
     fun publishService(it: TopicMessage): Boolean {
-        return publish(AppConfig.getTopicDeviceIdUrl(topicByDevice), JSON.toJSONString(it))
+        val topic = buildDeviceTopic(topicByDevice, "发布消息") ?: return false
+        return publish(topic, JSON.toJSONString(it))
     }
 
     /**
@@ -371,14 +395,19 @@ open class VMMqtt {
      * @param callback   订阅结果回调
      */
     fun allSubScribe(client: MqttAsyncClient, generation: Long, callback: (Boolean) -> Unit) {
-        subscribe(client, generation, AppConfig.getTopicDeviceIdUrl(topicByServer), callback = callback)
+        val topic = buildDeviceTopic(topicByServer, "订阅服务端主题") ?: run {
+            callback(false)
+            return
+        }
+        subscribe(client, generation, topic, callback = callback)
     }
 
     /**
      * 取消当前设备的全部订阅。
      */
     fun unAllSubscribe() {
-        unsubscribe(AppConfig.getTopicDeviceIdUrl(topicByServer))
+        val topic = buildDeviceTopic(topicByServer, "取消订阅服务端主题") ?: return
+        unsubscribe(topic)
     }
 
     /**

@@ -66,6 +66,19 @@ object DataManagementAPI {
     private fun logW(message: String) = LogUtils.w("[$LOG_SYNC] $message")
     private fun logE(message: String) = LogUtils.e("[$LOG_SYNC] $message")
 
+    private fun requireStableDeviceCode(operation: String): String? {
+        val deviceCode = AppConfig.getDeviceId()
+        if (deviceCode.isBlank()) {
+            logW(
+                "【设备身份】deviceCode（云端设备编号）未锁定，跳过$operation，" +
+                    "避免使用 systemAndroidId（系统 ANDROID_ID）误同步或误创建设备"
+            )
+            AppConfig.logDeviceIdentity("$operation 前", force = true)
+            return null
+        }
+        return deviceCode
+    }
+
     private fun reconcileDiscardCloseTime(
         logPrefix: String,
         oldDiscardTime: Int,
@@ -561,6 +574,7 @@ object DataManagementAPI {
     }
 
     fun dataSyncServer() {
+        requireStableDeviceCode("启动云端同步") ?: return
         refreshStockData()
         getDeviceInfo()
     }
@@ -569,6 +583,10 @@ object DataManagementAPI {
         logPrefix: String = LOG_SYNC,
         onResult: ((success: Boolean, stockCount: Int) -> Unit)? = null
     ) {
+        requireStableDeviceCode("同步烤肠箱库存") ?: run {
+            onResult?.invoke(false, 0)
+            return
+        }
         NetApi.getStockData { code, content ->
             val kaoPanBoxList = mutableListOf<KaoPanBox>()
             if (code == 0) {
@@ -606,6 +624,7 @@ object DataManagementAPI {
     }
 
     fun uploadDataToServer() {
+        requireStableDeviceCode("上传烤盘和库存状态") ?: return
         val metadataNormalized = KaoPanHelper.normalizeKaoPanTasteMetadata()
         if (metadataNormalized) {
             logD("上传前已统一烤盘口味元数据")
@@ -638,6 +657,7 @@ object DataManagementAPI {
     }
 
     fun getDeviceInfo() {
+        val deviceCode = requireStableDeviceCode("拉取设备配置") ?: return
         NetApi.getKcProductList { code, content ->
             val tasteList = mutableListOf<Taste>()
             if (code == 0) {
@@ -663,7 +683,7 @@ object DataManagementAPI {
             }
         }
 
-        NetApi.getDeviceInfo(AppConfig.getDeviceId()) deviceInfoCallback@{ code, content ->
+        NetApi.getDeviceInfo(deviceCode) deviceInfoCallback@{ code, content ->
             if (code != 0) {
                 logE("设备配置获取失败：code=$code, content=$content")
                 return@deviceInfoCallback
@@ -804,8 +824,23 @@ object DataManagementAPI {
         val oldDiscardTime = appConfigBean.discardTime
         val previousIsEnable = AppConfig.getAlgorithmEnableFlag()
         val previousRestStatusSource = AppConfig.normalizeRestStatusSource(appConfigBean.restStatusSource)
+        val deviceCode = requireStableDeviceCode("刷新远端设备状态") ?: run {
+            onResult?.invoke(
+                RemoteDeviceStateRefreshResult(
+                    success = false,
+                    changed = false,
+                    onlineStatus = oldOnlineStatus,
+                    supplyStatus = oldSupplyStatus,
+                    scanBlockStatus = oldScanBlockStatus,
+                    inspectionMode = oldInspectionMode,
+                    isEnable = previousIsEnable,
+                    restStatusSource = previousRestStatusSource
+                )
+            )
+            return
+        }
 
-        NetApi.getDeviceInfo(AppConfig.getDeviceId()) refreshStateCallback@{ code, content ->
+        NetApi.getDeviceInfo(deviceCode) refreshStateCallback@{ code, content ->
             if (code != 0) {
                 logE("$logPrefix 失败：HTTP请求失败，code=$code, content=$content")
                 onResult?.invoke(
@@ -931,6 +966,10 @@ object DataManagementAPI {
     }
 
     fun uploadDeviceInfo(callback: ((code: Int, content: String?) -> Unit)? = null) {
+        requireStableDeviceCode("上传设备营业状态") ?: run {
+            callback?.invoke(1, "deviceCode_not_locked")
+            return
+        }
         NetApi.updateDeviceInfo(callback)
     }
 }

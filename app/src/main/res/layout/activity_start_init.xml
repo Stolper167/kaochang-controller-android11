@@ -43,7 +43,7 @@
                 android:id="@+id/tvDeviceIdLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="设备ID"
+                android:text="设备编号"
                 android:textSize="16sp"
                 android:textColor="@color/black"
                 android:textStyle="bold"/>
@@ -58,8 +58,8 @@
                     android:id="@+id/etDeviceId"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:enabled="false"
-                    android:hint=""
+                    android:enabled="true"
+                    android:hint="请输入后台预置设备编号"
                     android:inputType="text"
                     android:padding="12dp"/>
 

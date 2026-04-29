@@ -28,7 +28,14 @@ abstract class LoadNetActivity : BaseActivity() {
         binding.loadingLayout.visibility = View.VISIBLE
         binding.emptyLayout.visibility = View.GONE
 
-        NetApi.getDeviceInfo(AppConfig.getDeviceId()) { code, content ->
+        val deviceCode = AppConfig.getDeviceId()
+        if (deviceCode.isBlank()) {
+            AppConfig.logDeviceIdentity("启动配置加载前", force = true)
+            showLoadFailure("设备编号未初始化", onLoaded)
+            return
+        }
+
+        NetApi.getDeviceInfo(deviceCode) { code, content ->
             if (code != 0) {
                 showLoadFailure("网络异常", onLoaded)
                 return@getDeviceInfo

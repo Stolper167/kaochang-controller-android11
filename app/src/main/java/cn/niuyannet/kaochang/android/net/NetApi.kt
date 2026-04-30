@@ -21,6 +21,7 @@ object NetApi {
 
     // 设备初始化
     var init_url = "$API_URL_START/init"
+    var identity_apply_url = "$API_URL_START/identity/apply"
 
     // 获取烤肠箱库存
     var stock_url = "$API_URL_START/stock"
@@ -61,16 +62,27 @@ object NetApi {
     /**
      * 设备初始化。
      */
-    fun initDevice(deviceId: String, callback: (code: Int, content: String?) -> Unit) {
-        val normalizedDeviceCode = requireDeviceCodeForHttp(
-            operation = "初始化设备",
-            deviceCode = deviceId,
-            callback = callback
-        ) ?: return
+    fun initDevice(deviceId: String, activationCode: String? = null, callback: (code: Int, content: String?) -> Unit) {
+        val normalizedDeviceCode = DeviceIdentityPolicy.normalizeDeviceCode(deviceId).orEmpty()
+        val normalizedActivationCode = activationCode?.trim().orEmpty()
+        if (normalizedDeviceCode.isBlank() && normalizedActivationCode.isBlank()) {
+            LogUtils.w("【设备身份】设备初始化已拦截：deviceCode（云端设备编号）和 activationCode（一次性激活码）均为空")
+            callback(1, "deviceCode_or_activationCode_required")
+            return
+        }
         AppConfig.logDeviceIdentity("设备初始化请求前", force = true)
         val json = JSONObject()
-        json["deviceCode"] = normalizedDeviceCode
-        LogUtils.d("【网络请求】开始初始化设备：deviceCode（云端设备编号）=$normalizedDeviceCode")
+        if (normalizedDeviceCode.isNotBlank()) {
+            json["deviceCode"] = normalizedDeviceCode
+        }
+        if (normalizedActivationCode.isNotBlank()) {
+            json["activationCode"] = normalizedActivationCode
+        }
+        LogUtils.d(
+            "【网络请求】开始初始化设备：" +
+                "deviceCode（云端设备编号）=${normalizedDeviceCode.ifBlank { "未填写" }}，" +
+                "activationCode（一次性激活码）=${if (normalizedActivationCode.isBlank()) "未填写" else "已填写"}"
+        )
         OkGo.post<String>(init_url)
             .upJson(json.toJSONString())
             .execute(object : StringCallback() {
@@ -79,17 +91,52 @@ object NetApi {
                 }
 
                 override fun onSuccess(response: Response<String>?) {
-                    LogUtils.d("【网络请求】设备初始化成功：deviceCode（云端设备编号）=$normalizedDeviceCode")
+                    LogUtils.d("【网络请求】设备初始化接口返回成功：deviceCode（云端设备编号）=${normalizedDeviceCode.ifBlank { "待云端返回" }}")
                     callback(0, response?.body())
                 }
 
                 override fun onError(response: Response<String>?) {
                     super.onError(response)
                     LogUtils.e(
-                        "【网络请求】设备初始化失败：deviceCode（云端设备编号）=$normalizedDeviceCode, " +
+                        "【网络请求】设备初始化失败：deviceCode（云端设备编号）=${normalizedDeviceCode.ifBlank { "未填写" }}, " +
                             "error=${response?.exception?.message}"
                     )
                     callback(1, null)
+                }
+            })
+    }
+
+    /**
+     * 提交设备身份申请。
+     */
+    fun applyDeviceIdentity(
+        candidateDeviceCode: String?,
+        activationCode: String?,
+        remark: String?,
+        callback: (code: Int, content: String?) -> Unit
+    ) {
+        val json = AppConfig.buildDeviceIdentityApplyPayload(candidateDeviceCode, activationCode, remark)
+        AppConfig.logDeviceIdentity("提交设备身份申请前", force = true)
+        LogUtils.w(
+            "【设备身份】提交身份申请：candidateDeviceCode（候选设备编号）=${json.getString("candidateDeviceCode")}，" +
+                "identityInstallId（本机安装/身份申请指纹）=${json.getString("identityInstallId")}，" +
+                "systemAndroidId（系统 ANDROID_ID）=${json.getString("systemAndroidId")}"
+        )
+        OkGo.post<String>(identity_apply_url)
+            .upJson(json.toJSONString())
+            .execute(object : StringCallback() {
+                override fun onSuccess(response: Response<String>?) {
+                    LogUtils.w("【设备身份】身份申请接口返回：content=${response?.body()}")
+                    callback(0, response?.body())
+                }
+
+                override fun onError(response: Response<String>?) {
+                    super.onError(response)
+                    LogUtils.e(
+                        "【设备身份】身份申请提交失败：error=${response?.exception?.message}，" +
+                            "candidateDeviceCode=${json.getString("candidateDeviceCode")}"
+                    )
+                    callback(1, response?.body())
                 }
             })
     }

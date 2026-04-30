@@ -6,8 +6,6 @@ package cn.niuyannet.kaochang.android.init
  * 注意：systemAndroidId（系统 ANDROID_ID）只能作为诊断字段，不能作为新设备编号兜底。
  */
 object DeviceIdentityPolicy {
-    const val CANONICAL_DEVICE_CODE = "04086c2932977630"
-    const val LEGACY_ALIAS_DEVICE_CODE = "95cdf4e762fb2886"
     private val DEVICE_CODE_PATTERN = Regex("^[a-z0-9_-]{6,64}$")
 
     enum class IdentitySource {
@@ -38,15 +36,15 @@ object DeviceIdentityPolicy {
         if (trimmed.isBlank()) {
             return null
         }
-        val normalized = when (trimmed) {
-            LEGACY_ALIAS_DEVICE_CODE -> CANONICAL_DEVICE_CODE
-            else -> trimmed
-        }
-        return normalized.takeIf { DEVICE_CODE_PATTERN.matches(it) }
+        return trimmed.takeIf { DEVICE_CODE_PATTERN.matches(it) }
     }
 
     fun bytesToHex(bytes: ByteArray): String {
         return bytes.joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    fun canInitializeWithDeviceCodeOrActivationCode(deviceCode: String?, activationCode: String?): Boolean {
+        return normalizeDeviceCode(deviceCode) != null || !activationCode?.trim().isNullOrBlank()
     }
 
     fun resolveDeviceCode(
@@ -74,8 +72,7 @@ object DeviceIdentityPolicy {
             )
         }
 
-        val selected = candidates.firstOrNull { it.normalizedDeviceCode == CANONICAL_DEVICE_CODE }
-            ?: candidates.firstOrNull()
+        val selected = candidates.firstOrNull()
 
         if (selected == null) {
             return DeviceIdentityResolution(

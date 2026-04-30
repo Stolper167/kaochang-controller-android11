@@ -12,11 +12,13 @@ import com.alibaba.fastjson.JSON
 import com.alibaba.fastjson.JSONObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.UUID
 
 object DeviceIdentityManager {
     private const val KEY_STABLE_DEVICE_CODE = "sp_device_code"
     private const val KEY_LEGACY_CACHED_DEVICE_CODE = "sp_android_id"
     private const val KEY_IDENTITY_JSON = "sp_device_identity_json"
+    private const val KEY_IDENTITY_INSTALL_ID = "sp_identity_install_id"
     private const val KEY_APP_CONFIG_JSON = "sp_app_config_json"
     private const val NO_BACKUP_FILE_NAME = "kaochang_device_identity.json"
     private const val PUBLIC_DIR_NAME = "KaoChang"
@@ -33,8 +35,14 @@ object DeviceIdentityManager {
         val rawDeviceCode: String?,
         val systemAndroidId: String?,
         val systemAndroidIdIgnored: Boolean,
+        val identityInstallId: String,
         val versionName: String,
-        val signatureSha256: String
+        val signatureSha256: String,
+        val manufacturer: String,
+        val brand: String,
+        val model: String,
+        val device: String,
+        val product: String
     )
 
     fun getDeviceCode(): String {
@@ -64,6 +72,24 @@ object DeviceIdentityManager {
         return resolveAndPersistIdentity(reason = "readIdentitySnapshot")
     }
 
+    fun buildIdentityApplyPayload(candidateDeviceCode: String?, activationCode: String?, remark: String?): JSONObject {
+        val snapshot = readIdentitySnapshot()
+        return JSONObject().apply {
+            put("candidateDeviceCode", DeviceIdentityPolicy.normalizeDeviceCode(candidateDeviceCode) ?: "")
+            put("activationCode", activationCode ?: "")
+            put("systemAndroidId", snapshot.systemAndroidId ?: "")
+            put("identityInstallId", snapshot.identityInstallId)
+            put("signatureSha256", snapshot.signatureSha256)
+            put("versionName", snapshot.versionName)
+            put("manufacturer", snapshot.manufacturer)
+            put("brand", snapshot.brand)
+            put("model", snapshot.model)
+            put("device", snapshot.device)
+            put("product", snapshot.product)
+            put("remark", remark ?: "")
+        }
+    }
+
     fun logIdentity(reason: String, force: Boolean = false) {
         val snapshot = readIdentitySnapshot()
         val signature = listOf(
@@ -83,6 +109,7 @@ object DeviceIdentityManager {
                 "deviceCode（云端设备编号）=${snapshot.deviceCode ?: "未锁定"}，" +
                 "identitySource（身份来源）=${identitySourceText(snapshot.source)}，" +
                 "systemAndroidId（系统 ANDROID_ID）=${snapshot.systemAndroidId ?: "读取失败"}，" +
+                "identityInstallId（本机安装/身份申请指纹）=${snapshot.identityInstallId}，" +
                 "versionName（App版本名）=${snapshot.versionName}，" +
                 "signatureSha256（安装签名摘要）=${snapshot.signatureSha256}"
         )
@@ -139,8 +166,14 @@ object DeviceIdentityManager {
             rawDeviceCode = resolution.rawDeviceCode,
             systemAndroidId = systemAndroidId,
             systemAndroidIdIgnored = resolution.systemAndroidIdIgnored,
+            identityInstallId = getOrCreateIdentityInstallId(context),
             versionName = readVersionName(context),
-            signatureSha256 = readSignatureSha256(context)
+            signatureSha256 = readSignatureSha256(context),
+            manufacturer = Build.MANUFACTURER ?: "",
+            brand = Build.BRAND ?: "",
+            model = Build.MODEL ?: "",
+            device = Build.DEVICE ?: "",
+            product = Build.PRODUCT ?: ""
         )
     }
 
@@ -154,6 +187,7 @@ object DeviceIdentityManager {
             put("deviceCode", deviceCode)
             put("rawDeviceCode", rawDeviceCode ?: deviceCode)
             put("systemAndroidId", systemAndroidId ?: "")
+            put("identityInstallId", getOrCreateIdentityInstallId(context))
             put("source", source)
             put("updatedAt", System.currentTimeMillis())
         }.toJSONString()
@@ -179,11 +213,15 @@ object DeviceIdentityManager {
     }
 
     private fun readDeviceCodeFromFile(file: File): String? {
+        return readStringFieldFromFile(file, "deviceCode")
+    }
+
+    private fun readStringFieldFromFile(file: File, fieldName: String): String? {
         return try {
             if (!file.exists() || !file.isFile) {
                 return null
             }
-            JSON.parseObject(file.readText(Charsets.UTF_8))?.getString("deviceCode")
+            JSON.parseObject(file.readText(Charsets.UTF_8))?.getString(fieldName)
         } catch (_: Exception) {
             null
         }
@@ -215,6 +253,35 @@ object DeviceIdentityManager {
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun getOrCreateIdentityInstallId(context: Context): String {
+        val candidates = listOf(
+            PreferenceUtils.getStringPreference(AppConfig.Sp_File_URL, KEY_IDENTITY_INSTALL_ID, null),
+            readStringFieldFromFile(noBackupIdentityFile(context), "identityInstallId"),
+            readStringFieldFromFile(publicIdentityFile(), "identityInstallId")
+        ).mapNotNull { it?.trim()?.takeIf { value -> value.isNotBlank() } }
+
+        val selected = candidates.firstOrNull() ?: UUID.randomUUID().toString().replace("-", "")
+        PreferenceUtils.saveStringPreference(AppConfig.Sp_File_URL, KEY_IDENTITY_INSTALL_ID, selected)
+        ensureIdentityInstallIdCopies(context, selected)
+        return selected
+    }
+
+    private fun ensureIdentityInstallIdCopies(context: Context, identityInstallId: String) {
+        val systemAndroidId = getSystemAndroidId(context) ?: ""
+        listOf(noBackupIdentityFile(context), publicIdentityFile()).forEach { file ->
+            if (readStringFieldFromFile(file, "identityInstallId").isNullOrBlank()) {
+                val payload = JSONObject().apply {
+                    put("deviceCode", readDeviceCodeFromFile(file) ?: "")
+                    put("identityInstallId", identityInstallId)
+                    put("systemAndroidId", systemAndroidId)
+                    put("source", "identity_install_id")
+                    put("updatedAt", System.currentTimeMillis())
+                }.toJSONString()
+                writeIdentityFile(file, payload, "identityInstallId")
+            }
         }
     }
 

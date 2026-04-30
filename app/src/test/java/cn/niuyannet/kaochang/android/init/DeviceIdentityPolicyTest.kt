@@ -8,10 +8,10 @@ import org.junit.Test
 class DeviceIdentityPolicyTest {
 
     @Test
-    fun normalizeDeviceCode_shouldMapKnownAliasToCanonicalDeviceCode() {
+    fun normalizeDeviceCode_shouldNotHardcodeAliasMapping() {
         val normalized = DeviceIdentityPolicy.normalizeDeviceCode("95cdf4e762fb2886")
 
-        assertEquals("04086c2932977630", normalized)
+        assertEquals("95cdf4e762fb2886", normalized)
     }
 
     @Test
@@ -26,6 +26,11 @@ class DeviceIdentityPolicyTest {
         assertNull(DeviceIdentityPolicy.normalizeDeviceCode("abc"))
         assertNull(DeviceIdentityPolicy.normalizeDeviceCode("中文设备编号"))
         assertNull(DeviceIdentityPolicy.normalizeDeviceCode("04086c2932977630/../"))
+    }
+
+    @Test
+    fun canInitializeWithDeviceCodeOrActivationCode_shouldAllowActivationCodeOnly() {
+        assertTrue(DeviceIdentityPolicy.canInitializeWithDeviceCodeOrActivationCode("", "KC-1234-5678-ABCD"))
     }
 
     @Test

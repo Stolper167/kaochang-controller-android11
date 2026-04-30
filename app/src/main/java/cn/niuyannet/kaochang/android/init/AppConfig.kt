@@ -354,6 +354,13 @@ object AppConfig {
         DeviceIdentityManager.logIdentity(reason, force)
     }
 
+    fun buildDeviceIdentityApplyPayload(
+        candidateDeviceCode: String?,
+        activationCode: String? = null,
+        remark: String? = null
+    ): JSONObject {
+        return DeviceIdentityManager.buildIdentityApplyPayload(candidateDeviceCode, activationCode, remark)
+    }
     private fun syncCachedConfigDeviceCode(deviceCode: String) {
         if (deviceCode.isBlank()) {
             return

@@ -1,6 +1,7 @@
 ﻿package cn.niuyannet.kaochang.android.init
 
 import cn.niuyannet.kaochang.android.model.KaoPanHelper
+import cn.niuyannet.kaochang.android.net.RemoteConcurrencyControlHelper
 import cn.niuyannet.kaochang.android.utils.LogUtils
 import cn.niuyannet.kaochang.android.utils.PreferenceUtils
 import com.alibaba.fastjson.JSON
@@ -83,6 +84,13 @@ object AppConfig {
         if (appConfigBean == null) {
             appConfigBean = AppConfigBean()
         }
+        val config = appConfigBean!!
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        normalizeConcurrencyState(config, "配置加载")
+        if (oldModeType != config.modeType || oldTransitionMode != config.transitionMode) {
+            saveAppConfig(config)
+        }
         return appConfigBean!!
     }
 
@@ -117,6 +125,47 @@ object AppConfig {
     fun getAlgorithmEnableFlag(): Int {
         val config = getAppConfig()
         return if (config.isEnable == 1) 1 else 0
+    }
+
+    private fun hasHighConcurrencyAreaActive(): Boolean {
+        return try {
+            KaoPanHelper.getKaoPanList().any { pan ->
+                val inHighConcurrencyArea = pan.positionSn in 10..21 || pan.positionSn in 25..33
+                inHighConcurrencyArea &&
+                    (pan.isHasSausage ||
+                        pan.isHasGrilling ||
+                        pan.startTime > 0L ||
+                        pan.holdingTime > 0L ||
+                        pan.status != 0)
+            }
+        } catch (e: Exception) {
+            LogUtils.w("[配置迁移] 判断高并发区域烤盘状态失败，保守保持高转低收口", e)
+            true
+        }
+    }
+
+    private fun normalizeConcurrencyState(config: AppConfigBean, logPrefix: String) {
+        val oldModeType = config.modeType
+        val oldTransitionMode = config.transitionMode
+        val highConcurrencyAreaActive = hasHighConcurrencyAreaActive()
+        val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = oldModeType,
+            currentTransitionMode = oldTransitionMode,
+            requestedModeType = oldModeType,
+            requestedTransitionMode = oldTransitionMode,
+            highConcurrencyAreaActive = highConcurrencyAreaActive
+        )
+        if (oldModeType == resolvedTarget.modeType && oldTransitionMode == resolvedTarget.transitionMode) {
+            return
+        }
+        config.modeType = resolvedTarget.modeType
+        config.transitionMode = resolvedTarget.transitionMode
+        LogUtils.w(
+            "[$logPrefix] 远端配置并发运行态已归一化：" +
+                "原 modeType（并发模式）=$oldModeType，原 transitionMode（并发切换过渡态）=$oldTransitionMode，" +
+                "高并发区域是否仍有烤肠或动作=$highConcurrencyAreaActive，" +
+                "新 modeType（并发模式）=${config.modeType}，新 transitionMode（并发切换过渡态）=${config.transitionMode}"
+        )
     }
 
     fun mergeRemoteConfig(
@@ -269,6 +318,7 @@ object AppConfig {
             preservedFields.add("status(normalized_from_onlineStatus)")
             config.status = 1
         }
+        normalizeConcurrencyState(config, logPrefix)
 
         saveAppConfig(config)
         if (jsonData.containsKey("deviceCode")) {
@@ -361,6 +411,7 @@ object AppConfig {
     ): JSONObject {
         return DeviceIdentityManager.buildIdentityApplyPayload(candidateDeviceCode, activationCode, remark)
     }
+
     private fun syncCachedConfigDeviceCode(deviceCode: String) {
         if (deviceCode.isBlank()) {
             return

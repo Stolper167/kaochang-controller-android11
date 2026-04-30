@@ -1788,11 +1788,14 @@ object KaoChangScheduler {
     }
 
     private fun applyRuntimeMode(snapshot: SchedulerSnapshot, config: AppConfigBean, reason: String) {
-        val nextMode = if (snapshot.mode == SchedulerMode.LOW) 1 else 2
         val nextTransition = when (snapshot.transition) {
             SchedulerTransition.NONE -> 0
             SchedulerTransition.LOW_TO_HIGH -> 1
             SchedulerTransition.HIGH_TO_LOW -> 2
+        }
+        val nextMode = when (snapshot.transition) {
+            SchedulerTransition.HIGH_TO_LOW -> 2
+            else -> if (snapshot.mode == SchedulerMode.LOW) 1 else 2
         }
         if (config.modeType == nextMode && config.transitionMode == nextTransition) {
             return

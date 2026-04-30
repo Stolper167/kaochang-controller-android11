@@ -215,6 +215,23 @@ object DataManagementAPI {
             config.errorStatus == AppConfigBean.ERROR_STATUS_NORMAL
     }
 
+    private fun hasHighConcurrencyAreaActive(): Boolean {
+        return try {
+            KaoPanHelper.getKaoPanList().any { pan ->
+                val inHighConcurrencyArea = pan.positionSn in 10..21 || pan.positionSn in 25..33
+                inHighConcurrencyArea &&
+                    (pan.isHasSausage ||
+                        pan.isHasGrilling ||
+                        pan.startTime > 0L ||
+                        pan.holdingTime > 0L ||
+                        pan.status != 0)
+            }
+        } catch (e: Exception) {
+            logW("判断高并发区域烤盘状态失败，保守保持高转低收口：error=${e.message}")
+            true
+        }
+    }
+
     private fun restStatusSourceText(value: String?): String = AppConfig.restStatusSourceText(value)
 
     private fun appendBusinessTimeDiff(
@@ -527,11 +544,13 @@ object DataManagementAPI {
         val requestedModeType = json.getInteger("modeType") ?: previousModeType
         val requestedTransitionMode = json.getInteger("transitionMode")
         val operator = json.getString("operator").orEmpty()
+        val highConcurrencyAreaActive = hasHighConcurrencyAreaActive()
         val resolvedTarget = RemoteConcurrencyControlHelper.resolveTarget(
             currentModeType = previousModeType,
             currentTransitionMode = previousTransitionMode,
             requestedModeType = requestedModeType,
-            requestedTransitionMode = requestedTransitionMode
+            requestedTransitionMode = requestedTransitionMode,
+            highConcurrencyAreaActive = highConcurrencyAreaActive
         )
 
         currentConfigBeforeApply.modeType = resolvedTarget.modeType
@@ -553,6 +572,16 @@ object DataManagementAPI {
                     "后台目标 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
                     "transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}，" +
                     "策略=以后台最新目标为准"
+            )
+        }
+        if (requestedModeType != resolvedTarget.modeType || (requestedTransitionMode ?: previousTransitionMode) != resolvedTarget.transitionMode) {
+            logW(
+                "远端并发控制已归一化并发运行态：source=$source，controlSeq=$controlSeq，operator=${operator.ifBlank { "unknown" }}，" +
+                    "请求 modeType（并发模式）=${formatDiffValue("modeType", requestedModeType)}，" +
+                    "请求 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", requestedTransitionMode ?: previousTransitionMode)}，" +
+                    "高并发区域是否仍有烤肠或动作=$highConcurrencyAreaActive，" +
+                    "落地 modeType（并发模式）=${formatDiffValue("modeType", resolvedTarget.modeType)}，" +
+                    "落地 transitionMode（并发切换过渡态）=${formatDiffValue("transitionMode", resolvedTarget.transitionMode)}"
             )
         }
 

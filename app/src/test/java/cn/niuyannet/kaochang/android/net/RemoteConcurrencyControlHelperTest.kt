@@ -29,7 +29,48 @@ class RemoteConcurrencyControlHelperTest {
             requestedTransitionMode = null
         )
 
+        assertEquals(2, resolved.modeType)
+        assertEquals(2, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveTarget_shouldAllowExplicitManualClearToLowStable() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 1,
+            currentTransitionMode = 2,
+            requestedModeType = 1,
+            requestedTransitionMode = 0
+        )
+
         assertEquals(1, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveTarget_shouldClearInvalidLowHighToLowWhenHighAreaIsIdle() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 1,
+            currentTransitionMode = 2,
+            requestedModeType = 1,
+            requestedTransitionMode = 2,
+            highConcurrencyAreaActive = false
+        )
+
+        assertEquals(1, resolved.modeType)
+        assertEquals(0, resolved.transitionMode)
+    }
+
+    @Test
+    fun resolveTarget_shouldKeepHighToLowTransitionWhenHighAreaHasSausage() {
+        val resolved = RemoteConcurrencyControlHelper.resolveTarget(
+            currentModeType = 1,
+            currentTransitionMode = 2,
+            requestedModeType = 1,
+            requestedTransitionMode = 2,
+            highConcurrencyAreaActive = true
+        )
+
+        assertEquals(2, resolved.modeType)
         assertEquals(2, resolved.transitionMode)
     }
 
